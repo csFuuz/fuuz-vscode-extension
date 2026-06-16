@@ -1,0 +1,341 @@
+{
+  "name": "fuuz-vscode-extension",
+  "displayName": "Fuuz for VS Code",
+  "description": "VS Code extension for Fuuz application management with multi-tenant MCP support",
+  "version": "0.13.3",
+  "publisher": "cscott",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/csFuuz/fuuz-vscode-extension.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "fuuz.openConfigPanel",
+        "title": "Configure Connections",
+        "category": "Fuuz",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "fuuz.configureTenants",
+        "title": "Configure Tenants",
+        "category": "Fuuz"
+      },
+      {
+        "command": "fuuz.addConnectionByKey",
+        "title": "Add Connection by API Key",
+        "category": "Fuuz",
+        "icon": "$(add)"
+      },
+      {
+        "command": "fuuz.selectTenant",
+        "title": "Select Active Tenant",
+        "category": "Fuuz"
+      },
+      {
+        "command": "fuuz.replaceKey",
+        "title": "Replace API Key",
+        "category": "Fuuz",
+        "icon": "$(key)"
+      },
+      {
+        "command": "fuuz.syncTenantData",
+        "title": "Sync Tenant Data",
+        "category": "Fuuz",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fuuz.createTool",
+        "title": "Create New Tool (Data Flow)",
+        "category": "Fuuz",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "fuuz.showErd",
+        "title": "Show ERD",
+        "category": "Fuuz",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "fuuz.showModuleErd",
+        "title": "Show Module ERD",
+        "category": "Fuuz",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "fuuz.showAppErd",
+        "title": "Show Application ERD",
+        "category": "Fuuz",
+        "icon": "$(type-hierarchy-sub)"
+      },
+      {
+        "command": "fuuz.queryModel",
+        "title": "Query Data Model",
+        "category": "Fuuz",
+        "icon": "$(search)"
+      },
+      {
+        "command": "fuuz.deployComponent",
+        "title": "Deploy Component Version",
+        "category": "Fuuz",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "fuuz.openInFuuz",
+        "title": "Open in Fuuz",
+        "category": "Fuuz",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "fuuz.findResource",
+        "title": "Find Data Model",
+        "category": "Fuuz",
+        "icon": "$(search)"
+      },
+      {
+        "command": "fuuz.executeFlow",
+        "title": "Execute Flow",
+        "category": "Fuuz",
+        "icon": "$(play)"
+      },
+      {
+        "command": "fuuz.sendWebhook",
+        "title": "Send Webhook",
+        "category": "Fuuz",
+        "icon": "$(radio-tower)"
+      },
+      {
+        "command": "fuuz.writeMcpJson",
+        "title": "Write MCP Server Config (.vscode/mcp.json)",
+        "category": "Fuuz"
+      },
+      {
+        "command": "fuuz.generateContextDoc",
+        "title": "Generate App Context File",
+        "category": "Fuuz"
+      },
+      {
+        "command": "fuuz.openTenantSettings",
+        "title": "Open Settings",
+        "category": "Fuuz",
+        "icon": "$(settings-gear)"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "fuuz",
+        "label": "Fuuz"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fuuzActivityBar",
+          "title": "Fuuz",
+          "icon": "media/mark.png"
+        }
+      ]
+    },
+    "views": {
+      "fuuzActivityBar": [
+        {
+          "id": "fuuzTenantSelector",
+          "name": "Connections"
+        },
+        {
+          "id": "fuuzResourceTree",
+          "name": "Resources",
+          "when": "fuuz.tenantSelected"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "fuuzTenantSelector",
+        "contents": "Connect to Fuuz to browse your app's module groups, flows, screens, scripts and data models — and register the Fuuz MCP server for your AI copilot.\n[Add Connection by API Key](command:fuuz.addConnectionByKey)\n[Configure Connections](command:fuuz.openConfigPanel)\nPaste a Fuuz API key and the tenant, enterprise and environment are detected automatically.",
+        "when": "!fuuz.hasConfig"
+      }
+    ],
+    "configuration": {
+      "title": "Fuuz",
+      "properties": {
+        "fuuz.enterprises": {
+          "type": "array",
+          "markdownDescription": "Fuuz enterprise connections and their tenants. Prefer the **Fuuz: Configure Connections** command over editing this directly. Access tokens are **not** stored here — they live in VS Code SecretStorage.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique enterprise identifier"
+              },
+              "name": {
+                "type": "string",
+                "description": "Enterprise display name"
+              },
+              "environment": {
+                "type": "string",
+                "description": "The {env}.{account} slug, e.g. build.mfgx. All endpoints derive from https://api.{environment}.fuuz.app"
+              },
+              "mcpEndpoint": {
+                "type": "string",
+                "description": "Fuuz REST API base URL (used by the resource tree). Derived from environment when set."
+              },
+              "mcpServerUrl": {
+                "type": "string",
+                "description": "Override for the streamable-HTTP MCP server URL. Defaults to {apiBase}/mcp."
+              },
+              "flowExecutionUrl": {
+                "type": "string",
+                "description": "Override for the flow execution endpoint. Defaults to {apiBase}/orchestration/executeFlow."
+              },
+              "webhookUrl": {
+                "type": "string",
+                "description": "Override for the webhook base. Defaults to {apiBase}/webhook/post/."
+              },
+              "tenants": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Unique tenant identifier"
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Tenant display name"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name"
+                  ]
+                },
+                "description": "Tenants within this enterprise"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "tenants"
+            ]
+          },
+          "scope": "application"
+        },
+        "fuuz.activeEnterprise": {
+          "type": "string",
+          "description": "Currently active enterprise ID",
+          "scope": "application"
+        },
+        "fuuz.activeTenant": {
+          "type": "string",
+          "description": "Currently active tenant ID",
+          "scope": "application"
+        },
+        "fuuz.enableDeploy": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Allow the **Fuuz: Deploy Component Version** command. Deploys write to the tenant and data-model deploys can be destructive, so this is **off by default**.",
+          "scope": "application"
+        }
+      }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "fuuz.findResource",
+          "when": "view == fuuzResourceTree",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.showAppErd",
+          "when": "view == fuuzResourceTree",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.openInFuuz",
+          "when": "view == fuuzResourceTree || view == fuuzTenantSelector",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.createTool",
+          "when": "view == fuuzResourceTree",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.syncTenantData",
+          "when": "view == fuuzResourceTree",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.openConfigPanel",
+          "when": "view == fuuzResourceTree || view == fuuzTenantSelector",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.addConnectionByKey",
+          "when": "view == fuuzTenantSelector",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "fuuz.executeFlow",
+          "when": "view == fuuzResourceTree && viewItem == flow",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.showErd",
+          "when": "view == fuuzResourceTree && viewItem == datamodel",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.showModuleErd",
+          "when": "view == fuuzResourceTree && viewItem == module",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.queryModel",
+          "when": "view == fuuzResourceTree && viewItem == datamodel",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.replaceKey",
+          "when": "view == fuuzTenantSelector && viewItem == tenant.unauthorized",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts --ignore-pattern \"**/*.test.ts\"",
+    "test": "tsc -p tsconfig.test.json && node --test out/test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "~1.101.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@vscode/test-electron": "^2.3.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {}
+}

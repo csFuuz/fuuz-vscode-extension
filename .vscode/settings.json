@@ -1,0 +1,78 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "out": false,
+      "dist": false
+    },
+    "search.exclude": {
+      "out": true,
+      "dist": true,
+      "node_modules": true
+    },
+    "[typescript]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode",
+      "editor.formatOnSave": true
+    },
+    "typescript.tsdk": "node_modules/typescript/lib",
+    "typescript.enablePromptUseWorkspaceTsdk": true
+  },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Extension",
+        "type": "extensionHost",
+        "request": "launch",
+        "args": [
+          "--extensionDevelopmentPath=${workspaceFolder}"
+        ],
+        "outFiles": [
+          "${workspaceFolder}/dist/**/*.js"
+        ],
+        "preLaunchTask": "${defaultBuildTask}"
+      },
+      {
+        "name": "Extension Tests",
+        "type": "extensionHost",
+        "request": "launch",
+        "args": [
+          "--extensionDevelopmentPath=${workspaceFolder}",
+          "--extensionTestsPath=${workspaceFolder}/dist/test"
+        ],
+        "outFiles": [
+          "${workspaceFolder}/dist/**/*.js"
+        ],
+        "preLaunchTask": "${defaultBuildTask}"
+      }
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "npm: compile",
+        "detail": "Compile TypeScript to JavaScript",
+        "type": "npm",
+        "script": "compile",
+        "group": {
+          "kind": "build",
+          "isDefault": true
+        },
+        "problemMatcher": "$tsc"
+      },
+      {
+        "label": "npm: watch",
+        "detail": "Watch TypeScript files and compile on change",
+        "type": "npm",
+        "script": "watch",
+        "isBackground": true,
+        "problemMatcher": "$tsc.background"
+      }
+    ]
+  }
+}
