@@ -4,12 +4,12 @@
 .vscode/
 node_modules/
 src/**
+scripts/**
 out/**
 tsconfig.test.json
 **/*.ts
 **/*.map
 **/*.test.ts
-!dist/**/*.d.ts
 tsconfig.json
 .eslintrc.json
 setup.sh

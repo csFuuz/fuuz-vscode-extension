@@ -2,12 +2,13 @@
   "name": "fuuz-vscode-extension",
   "displayName": "Fuuz for VS Code",
   "description": "VS Code extension for Fuuz application management with multi-tenant MCP support",
-  "version": "0.13.3",
+  "version": "0.19.0",
   "publisher": "cscott",
   "icon": "media/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/csFuuz/fuuz-vscode-extension.git"
+    "url": "https://github.com/csFuuz/fuuz.git",
+    "directory": "apps/vsCodeFuuzExtension"
   },
   "license": "MIT",
   "engines": {
@@ -121,6 +122,12 @@
         "command": "fuuz.writeMcpJson",
         "title": "Write MCP Server Config (.vscode/mcp.json)",
         "category": "Fuuz"
+      },
+      {
+        "command": "fuuz.registerWithClaude",
+        "title": "Register MCP Server with Claude",
+        "category": "Fuuz",
+        "icon": "$(robot)"
       },
       {
         "command": "fuuz.generateContextDoc",
@@ -251,6 +258,22 @@
           "default": false,
           "markdownDescription": "Allow the **Fuuz: Deploy Component Version** command. Deploys write to the tenant and data-model deploys can be destructive, so this is **off by default**.",
           "scope": "application"
+        },
+        "fuuz.claudeAutoRegister": {
+          "type": "string",
+          "enum": [
+            "userAndDesktop",
+            "user",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Keep Claude Code (user) and Claude Desktop in sync automatically",
+            "Keep only Claude Code (user) in sync automatically",
+            "Never write Claude config automatically (use the command instead)"
+          ],
+          "default": "userAndDesktop",
+          "markdownDescription": "Automatically register the Fuuz MCP servers with **Claude** whenever a connection or its token changes, so Claude can use them without running a command.\n\nThe live access token is **embedded** into Claude's private home-dir config (`~/.claude.json` and Claude Desktop, mode-600, never committed) — the same way every other MCP server stores its auth. The project `.mcp.json` is **never** written automatically and never embeds a token. **Restart Claude** to pick up changes.",
+          "scope": "application"
         }
       }
     },
@@ -290,6 +313,11 @@
           "command": "fuuz.addConnectionByKey",
           "when": "view == fuuzTenantSelector",
           "group": "navigation"
+        },
+        {
+          "command": "fuuz.registerWithClaude",
+          "when": "view == fuuzTenantSelector",
+          "group": "1_mcp"
         }
       ],
       "view/item/context": [
@@ -323,19 +351,33 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts --ignore-pattern \"**/*.test.ts\"",
-    "test": "tsc -p tsconfig.test.json && node --test out/test/*.test.js"
+    "check": "tsc --noEmit -p ./",
+    "check:webview": "tsc --noEmit -p src/webview/tsconfig.json",
+    "compile": "npm run check && npm run check:webview && node scripts/build-extension.mjs && npm run build:webview",
+    "build:extension": "node scripts/build-extension.mjs",
+    "build:webview": "node scripts/build-webview.mjs",
+    "watch": "node scripts/build-extension.mjs --watch",
+    "watch:check": "tsc --noEmit -watch -p ./",
+    "watch:webview": "node scripts/build-webview.mjs --watch",
+    "lint": "eslint src --ext ts --ignore-pattern \"**/*.test.ts\" --ignore-pattern \"src/webview/**\"",
+    "test": "tsc -p tsconfig.test.json && node --test out/test/*.test.js",
+    "test:webview": "npm run build:webview && node scripts/smoke-config-webview.mjs"
   },
   "devDependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@types/node": "^20.0.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "@types/vscode": "~1.101.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
     "@vscode/test-electron": "^2.3.0",
+    "@xyflow/react": "^12.11.0",
+    "esbuild": "^0.21.5",
     "eslint": "^8.0.0",
+    "jsdom": "^29.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.0.0"
-  },
-  "dependencies": {}
+  }
 }

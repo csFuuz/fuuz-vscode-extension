@@ -1,8 +1,10 @@
-import { Tenant, TenantResources } from '../types';
+import { ModelService, Tenant, TenantResources } from '../types';
 import { FuuzMcpClient } from './fuuzMcpClient';
 import { TenantConfigurationManager } from './tenantConfigurationManager';
 import { TokenStore } from './tokenStore';
+import * as vscode from 'vscode';
 import { ConnectionHealth } from './connectionHealth';
+import { fuuzLog, fuuzChannel } from './logger';
 
 /**
  * Service for managing tenant data operations
@@ -53,7 +55,7 @@ export class TenantDataService {
     try {
       mcp = await this.mcpClient.loadMcpSnapshot(endpoints.mcp, token);
     } catch (error) {
-      console.error('MCP snapshot failed:', error);
+      fuuzLog(`MCP snapshot failed for ${tenant.name}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     // Record connection health: if the snapshot failed, classify why (expired
@@ -80,6 +82,14 @@ export class TenantDataService {
       lastSyncedAt: new Date().toISOString(),
     };
 
+    if (mcp) {
+      fuuzLog(`sync ${tenant.name}: ${mcp.application.length} module groups, ${mcp.systemDataModels.length} system models, ${mcp.tools.length} tools`);
+      for (const issue of mcp.issues) fuuzLog(`  ⚠ ${issue}`);
+      this.warnIfUnauthorized(tenant.id, tenant.name, mcp.issues);
+    } else {
+      fuuzLog(`sync ${tenant.name}: MCP unavailable (manual fallback)`);
+    }
+
     await this.configManager.cacheResources(tenant.id, resources);
     return resources;
   }
@@ -88,12 +98,52 @@ export class TenantDataService {
     return this.configManager.getEnterprises().find(e => e.tenants.some(t => t.id === tenantId)) || null;
   }
 
+  // Warn at most once per tenant — until an explicit re-check (sync/replace-key)
+  // clears it, so users see whether a just-granted policy actually took effect.
+  private readonly warnedUnauthorized = new Set<string>();
+
+  /** Allow the next sync to re-warn about authorization (e.g. after replacing a key). */
+  forgetUnauthorizedWarning(tenantId: string): void {
+    this.warnedUnauthorized.delete(tenantId);
+  }
+
+  /**
+   * If discovery hit authorization failures, tell the user how to fix it: grant
+   * the API User a read/query policy in Fuuz, then issue a NEW key (existing
+   * keys don't inherit newly-assigned policies).
+   */
+  private warnIfUnauthorized(tenantId: string, tenantName: string, issues: string[]): void {
+    const authIssues = issues.filter(i => /not authorized/i.test(i));
+    if (authIssues.length === 0 || this.warnedUnauthorized.has(tenantId)) return;
+    this.warnedUnauthorized.add(tenantId);
+
+    const modules = [...new Set(
+      authIssues.map(i => i.match(/in the (\w+) module/)?.[1]).filter(Boolean) as string[]
+    )];
+    const where = modules.length ? ` (modules: ${modules.join(', ')})` : '';
+
+    void vscode.window
+      .showWarningMessage(
+        `Fuuz: connected to ${tenantName}, but this API key isn't authorized to read ${authIssues.length} resource(s)${where}. ` +
+          `In Fuuz, assign a read/query policy or policy group to the API User for this tenant, then issue a NEW API key ` +
+          `(existing keys don't pick up newly-granted policies) and use Replace API Key.`,
+        'Show Details',
+        'Replace API Key'
+      )
+      .then(choice => {
+        if (choice === 'Show Details') fuuzChannel().show(true);
+        else if (choice === 'Replace API Key') {
+          void vscode.commands.executeCommand('fuuz.replaceKey', this.findEnterpriseForTenant(tenantId)?.id, tenantId);
+        }
+      });
+  }
+
   // Lazy-loaded data model fields, keyed by `${tenantId}:${modelName}`.
   private readonly fieldCache = new Map<string, import('../types').DataModelField[]>();
 
   /** Fetch (and cache) a data model's fields on demand for the active tenant. */
-  async getModelFields(tenant: Tenant, modelName: string): Promise<import('../types').DataModelField[]> {
-    const key = `${tenant.id}:${modelName}`;
+  async getModelFields(tenant: Tenant, modelName: string, service: ModelService = 'application', signal?: AbortSignal): Promise<import('../types').DataModelField[]> {
+    const key = `${tenant.id}:${service}:${modelName}`;
     const cached = this.fieldCache.get(key);
     if (cached) return cached;
 
@@ -103,55 +153,56 @@ export class TenantDataService {
     if (!token) return [];
 
     const mcpUrl = this.configManager.endpointsFor(enterprise).mcp;
-    const fields = await this.mcpClient.fetchModelElements(mcpUrl, token, modelName);
+    const fields = await this.mcpClient.fetchModelElements(mcpUrl, token, modelName, service, signal);
     this.fieldCache.set(key, fields);
     return fields;
   }
 
   /** Fetch a model's graph (fields + relations) for ERD rendering. */
-  async getModelGraph(tenant: Tenant, modelName: string) {
+  async getModelGraph(tenant: Tenant, modelName: string, service: ModelService = 'application', signal?: AbortSignal) {
     const enterprise = this.findEnterpriseForTenant(tenant.id);
     if (!enterprise) return null;
     const token = await this.tokenStore.getToken(enterprise.id, tenant.id);
     if (!token) return null;
     const mcpUrl = this.configManager.endpointsFor(enterprise).mcp;
-    return this.mcpClient.fetchModelGraph(mcpUrl, token, modelName);
+    return this.mcpClient.fetchModelGraph(mcpUrl, token, modelName, service, signal);
   }
 
   // Tenant-wide relationship edges, cached (the full list is one MCP call).
   private readonly refsCache = new Map<string, import('../util/fuuzParse').ErdEdge[]>();
 
   /** Deploy an app component version for the active tenant (caller confirms). */
-  async deployComponent(tenant: Tenant, componentType: string, versionId: string, opts: { forceStopPreviousVersions?: boolean } = {}) {
+  async deployComponent(tenant: Tenant, componentType: string, versionId: string, opts: { forceStopPreviousVersions?: boolean } = {}, signal?: AbortSignal) {
     const enterprise = this.findEnterpriseForTenant(tenant.id);
     if (!enterprise) return null;
     const token = await this.tokenStore.getToken(enterprise.id, tenant.id);
     if (!token) return null;
     const mcpUrl = this.configManager.endpointsFor(enterprise).mcp;
-    return this.mcpClient.deployComponent(mcpUrl, token, componentType, versionId, opts);
+    return this.mcpClient.deployComponent(mcpUrl, token, componentType, versionId, opts, signal);
   }
 
   /** Run a read-only model query for the active tenant. */
-  async queryModel(tenant: Tenant, modelName: string, fields: string[], where: string) {
+  async queryModel(tenant: Tenant, modelName: string, fields: string[], where: string, service: ModelService = 'application', signal?: AbortSignal) {
     const enterprise = this.findEnterpriseForTenant(tenant.id);
     if (!enterprise) return null;
     const token = await this.tokenStore.getToken(enterprise.id, tenant.id);
     if (!token) return null;
     const mcpUrl = this.configManager.endpointsFor(enterprise).mcp;
-    return this.mcpClient.queryModel(mcpUrl, token, modelName, fields, where);
+    return this.mcpClient.queryModel(mcpUrl, token, modelName, fields, where, service, signal);
   }
 
   /** Fetch (and cache) the tenant's relationship edges for ERD building. */
-  async getReferences(tenant: Tenant) {
-    const cached = this.refsCache.get(tenant.id);
+  async getReferences(tenant: Tenant, service: ModelService = 'application', signal?: AbortSignal) {
+    const key = `${tenant.id}:${service}`;
+    const cached = this.refsCache.get(key);
     if (cached) return cached;
     const enterprise = this.findEnterpriseForTenant(tenant.id);
     if (!enterprise) return [];
     const token = await this.tokenStore.getToken(enterprise.id, tenant.id);
     if (!token) return [];
     const mcpUrl = this.configManager.endpointsFor(enterprise).mcp;
-    const edges = await this.mcpClient.fetchReferences(mcpUrl, token);
-    this.refsCache.set(tenant.id, edges);
+    const edges = await this.mcpClient.fetchReferences(mcpUrl, token, service, signal);
+    this.refsCache.set(key, edges);
     return edges;
   }
 
@@ -169,7 +220,7 @@ export class TenantDataService {
     try {
       return await this.syncTenantResources(tenant);
     } catch (error) {
-      console.error('Failed to get tenant resources:', error);
+      fuuzLog(`Failed to get resources for ${tenant.name}: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
   }

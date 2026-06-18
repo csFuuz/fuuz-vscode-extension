@@ -4,6 +4,7 @@
  * JWT decoding, and endpoint derivation.
  */
 import { DataModel, EnterpriseEndpoints, McpTool, ModuleGroup } from '../types';
+import { ErdEdgeJson, ErdGraph, ErdService } from './erdTypes';
 
 // --- MCP tools ---------------------------------------------------------
 
@@ -27,21 +28,33 @@ export type Rec = Record<string, string>;
  * so arguments are split respecting quotes and nesting.
  */
 export function parseTronRecords(text: string): Rec[] {
-  const cls = text.match(/class\s+[A-Z]\s*:\s*([^\n]+)/);
+  const cls = text.match(/class\s+([A-Z])\s*:\s*([^\n]+)/);
   if (!cls) return [];
-  const fields = cls[1].split(',').map(s => s.trim());
+  const letter = cls[1];
+  const fields = cls[2].split(',').map(s => s.trim());
   const start = text.indexOf('[', cls.index ?? 0);
   if (start < 0) return [];
-  const body = text.slice(start);
   const records: Rec[] = [];
-  const re = /[A-Z]\(/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(body))) {
-    const args = readArgs(body, m.index + m[0].length - 1);
-    if (!args) continue;
-    const rec: Rec = {};
-    fields.forEach((f, i) => (rec[f] = args[i] ?? ''));
-    records.push(rec);
+  // Scan quote-aware (like parseModelFieldRecords) and only treat the declared
+  // class letter followed by `(` as a tuple start. A naive `/[A-Z]\(/g` regex
+  // matches `Foo(` inside quoted string values (names/descriptions) and spawns
+  // phantom records — so the boundary scan must honor quotes, not just readArgs.
+  let inQuote = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuote) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inQuote = false;
+      continue;
+    }
+    if (ch === '"') { inQuote = true; continue; }
+    if (ch === letter && text[i + 1] === '(') {
+      const args = readArgs(text, i + 1);
+      if (!args) continue;
+      const rec: Rec = {};
+      fields.forEach((f, k) => (rec[f] = args[k] ?? ''));
+      records.push(rec);
+    }
   }
   return records;
 }
@@ -69,6 +82,60 @@ export function readArgs(str: string, openParen: number): string[] | null {
   return null;
 }
 
+/**
+ * Parse `system_list_model_fields` output into one record per field. Unlike a
+ * plain record query, this tool wraps the tuples in a JSON envelope —
+ * `[{ "name": Model, "fields": [A("name","type","desc"), …] }]` with a single
+ * `class A: name,type,description` declaration. Field descriptions can contain
+ * markdown (parens, capital letters), so we scan quote-aware and only treat the
+ * declared class letter followed by `(` as a tuple start — avoiding the false
+ * matches a regex would hit inside descriptions. Summary detail only (no nested
+ * metadata tuples).
+ */
+export function parseModelFieldRecords(text: string): Rec[] {
+  const cls = text.match(/class\s+([A-Z])\s*:\s*([^\n]+)/);
+  if (!cls) return [];
+  const letter = cls[1];
+  const cols = cls[2].split(',').map(s => s.trim());
+  const recs: Rec[] = [];
+  let inQuote = false;
+  for (let i = cls.index ?? 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuote) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inQuote = false;
+      continue;
+    }
+    if (ch === '"') { inQuote = true; continue; }
+    if (ch === letter && text[i + 1] === '(') {
+      const args = readArgs(text, i + 1);
+      if (args) {
+        const rec: Rec = {};
+        cols.forEach((c, k) => (rec[c] = args[k] ?? ''));
+        recs.push(rec);
+      }
+    }
+  }
+  return recs;
+}
+
+/** GraphQL/Fuuz scalar types — a field of any other base type is a relation. */
+export const SCALAR_TYPES = new Set([
+  'ID', 'String', 'Boolean', 'Int', 'Float', 'DateTime', 'Date', 'Time',
+  'JSON', 'JSONObject', 'BigInt', 'Decimal', 'Long', 'Upload', 'Byte', 'UUID', 'Email', 'URL',
+]);
+
+/** Strip list/non-null markers (`[`, `]`, `!`) to get a type's base name. */
+export function baseType(type: string): string {
+  return type.replace(/[[\]!]/g, '').trim();
+}
+
+/** True when a field type refers to another model (not a built-in scalar). */
+export function isRelationType(type: string): boolean {
+  const base = baseType(type);
+  return base.length > 0 && !SCALAR_TYPES.has(base);
+}
+
 /** Extract model names from a `system_list_models` TRON payload (tuple first args). */
 export function extractModelNames(text: string): string[] {
   const names = new Set<string>();
@@ -76,6 +143,16 @@ export function extractModelNames(text: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) names.add(m[1]);
   return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Web flows are designed to run inside the Fuuz web UI and **cannot be executed
+ * from VS Code** (they need the browser/screen runtime), so the extension hides
+ * the Execute action for them. Detection is by type name to tolerate label
+ * variants ("Web", "Web Flow", "Webflow"). Conservative: only true on a match.
+ */
+export function isWebflowType(type?: string): boolean {
+  return !!type && /web\s*flow|^web$|webflow/i.test(type.trim());
 }
 
 /** Module-group ids that belong to the platform/system surface, not the app. */
@@ -101,12 +178,13 @@ export function assembleApplication(groups: Rec[], modules: Rec[], screens: Rec[
   };
 
   const screensByModule = byKey(screens, 'moduleId', s => ({ id: s.id, name: s.name }));
-  const flowsByModule = byKey(flows, 'moduleId', f => ({ id: f.id, name: f.name }));
+  const flowsByModule = byKey(flows, 'moduleId', f => ({ id: f.id, name: f.name, type: f.type || undefined }));
   const modelsByModule = byKey(models, 'moduleId', (d): DataModel => ({
     id: d.id,
     name: d.name,
     description: d.dataModelTypeId,
     fields: [],
+    service: 'application',
   }));
   const modulesByGroup = byKey(modules, 'moduleGroupId', m => ({
     id: m.id,
@@ -174,47 +252,11 @@ export interface ModelGraph {
   relations: { field: string; target: string; many: boolean }[];
 }
 
-/** Sanitize an identifier so it's a valid Mermaid erDiagram entity/attr token. */
-export function safeId(id: string): string {
-  return (id || '_').replace(/[^A-Za-z0-9_]/g, '_');
-}
-
-export interface ErdEntity {
-  name: string;
-  fields?: { name: string; type: string }[];
-}
 export interface ErdEdge {
   from: string;
   to: string;
   label: string;
   many: boolean;
-}
-
-/** Render a Mermaid `erDiagram` from entities (optional attributes) + edges. */
-export function toErd(entities: ErdEntity[], edges: ErdEdge[]): string {
-  const lines: string[] = ['erDiagram'];
-  const seen = new Set<string>();
-  for (const e of entities) {
-    const n = safeId(e.name);
-    if (!n || seen.has(n)) continue;
-    seen.add(n);
-    lines.push(`  ${n} {`);
-    for (const f of (e.fields ?? []).slice(0, 40)) {
-      lines.push(`    ${safeId(f.type.replace(/[[\]!]/g, '')) || 'field'} ${safeId(f.name)}`);
-    }
-    lines.push('  }');
-  }
-  const edgeSeen = new Set<string>();
-  for (const ed of edges) {
-    const f = safeId(ed.from);
-    const t = safeId(ed.to);
-    if (!f || !t || f === t || !seen.has(f) || !seen.has(t)) continue;
-    const key = `${f}|${t}|${ed.label}`;
-    if (edgeSeen.has(key)) continue;
-    edgeSeen.add(key);
-    lines.push(`  ${f} ${ed.many ? '||--o{' : '}o--||'} ${t} : ${safeId(ed.label) || 'ref'}`);
-  }
-  return lines.join('\n');
 }
 
 /** Parse `system_list_model_references` TRON into edges, dropping audit/metadata noise. */
@@ -230,26 +272,97 @@ export function parseReferences(tron: string): ErdEdge[] {
     }));
 }
 
-/** ERD for one model: its attributes + outbound relations + inbound references. */
-export function buildModelErd(graph: ModelGraph, references: ErdEdge[]): string {
+/**
+ * Strip a trailing FK `Id`/`ID` suffix so a scalar foreign key (`areaId`) and its
+ * object-relation twin (`area`) canonicalize to the same relationship. Only the
+ * camelCase `…Id` convention is stripped (not words like "paid"/"valid").
+ */
+function canonicalBase(label: string): string {
+  const stripped = label.replace(/I[dD]$/, '');
+  return stripped.length ? stripped : label;
+}
+
+/**
+ * Collapse raw directed references into ONE edge per real relationship, with
+ * crow's-foot cardinality at each end:
+ *
+ *  1. Same-direction duplicates that are just the FK + its object twin
+ *     (`areaId` and `area`) collapse to a single edge — so a model isn't joined
+ *     to another twice for one relationship. Genuinely distinct foreign keys
+ *     (e.g. `shipFromAddressId` and `shipToAddressId`) keep their own edges.
+ *  2. A single `A → B` paired with a single `B → A` (a foreign key and its
+ *     reverse collection) merges into one undirected edge whose ends carry the
+ *     two cardinalities.
+ */
+export function relationshipEdges(raw: ErdEdge[]): ErdEdgeJson[] {
+  type Dir = { from: string; to: string; label: string; many: boolean };
+  const dir = new Map<string, Dir>();
+  for (const e of raw) {
+    if (!e.from || !e.to || e.from === e.to) continue;
+    const base = canonicalBase(e.label);
+    const key = `${e.from} ${e.to} ${base.toLowerCase()}`;
+    const ex = dir.get(key);
+    if (!ex) {
+      dir.set(key, { from: e.from, to: e.to, label: base, many: e.many });
+    } else {
+      ex.many = ex.many || e.many;
+      if (base.length < ex.label.length) ex.label = base; // prefer the object name
+    }
+  }
+
+  const groups = new Map<string, Dir[]>();
+  for (const d of dir.values()) {
+    const key = [d.from, d.to].slice().sort().join(' ');
+    const arr = groups.get(key);
+    if (arr) arr.push(d);
+    else groups.set(key, [d]);
+  }
+
+  const out: ErdEdgeJson[] = [];
+  for (const grp of groups.values()) {
+    const directions = new Set(grp.map(g => `${g.from}>${g.to}`));
+    if (grp.length === 2 && directions.size === 2) {
+      // Orient from the to-one (foreign-key owner) side so the crow's foot lands
+      // on the owning model and the bar on the referenced model.
+      const toOne = grp.find(g => !g.many) ?? grp[0];
+      const other = grp.find(g => g !== toOne)!;
+      out.push({ from: toOne.from, to: toOne.to, label: toOne.label, toMany: toOne.many, fromMany: other.many });
+    } else {
+      for (const g of grp) out.push({ from: g.from, to: g.to, label: g.label, toMany: g.many, fromMany: false });
+    }
+  }
+  return out;
+}
+
+/**
+ * JSON graph for one model: the focal model (with its fields) plus its outbound
+ * relations and inbound references. Neighbor nodes are emitted WITHOUT fields so
+ * the webview can lazy-load them on expand (avoids an MCP call per neighbor).
+ */
+export function buildModelGraph(graph: ModelGraph, references: ErdEdge[], service: ErdService = 'application'): ErdGraph {
   const model = graph.name;
   const outEdges: ErdEdge[] = graph.relations.map(r => ({ from: model, to: r.target, label: r.field, many: r.many }));
   const inEdges = references.filter(e => e.to === model && e.from !== model);
   const neighbors = new Set<string>([...outEdges.map(e => e.to), ...inEdges.map(e => e.from)].filter(n => n && n !== model));
-  const entities: ErdEntity[] = [{ name: model, fields: graph.fields }, ...[...neighbors].map(n => ({ name: n }))];
-  return toErd(entities, [...outEdges, ...inEdges]);
+  return {
+    nodes: [
+      { name: model, service, focal: true, fields: graph.fields },
+      ...[...neighbors].map(n => ({ name: n, service })),
+    ],
+    edges: relationshipEdges([...outEdges, ...inEdges]),
+  };
 }
 
-/** ERD for a set of models, showing only relationships internal to the set. */
-export function buildSetErd(modelNames: string[], references: ErdEdge[]): string {
+/**
+ * JSON graph for a set of models, with only the relationships internal to the
+ * set. Nodes carry no fields (loaded lazily) to keep large app/module ERDs cheap.
+ */
+export function buildSetGraph(modelNames: string[], references: ErdEdge[], service: ErdService = 'application'): ErdGraph {
   const names = new Set(modelNames);
-  const edges = references.filter(e => names.has(e.from) && names.has(e.to));
-  return toErd(modelNames.map(n => ({ name: n })), edges);
-}
-
-/** Back-compat single-model ERD (outbound relations only). */
-export function toMermaid(graph: ModelGraph): string {
-  return buildModelErd(graph, []);
+  return {
+    nodes: modelNames.map(n => ({ name: n, service })),
+    edges: relationshipEdges(references.filter(e => names.has(e.from) && names.has(e.to))),
+  };
 }
 
 // --- Endpoint derivation ----------------------------------------------

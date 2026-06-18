@@ -7,6 +7,7 @@ import { FuuzMcpClient } from './services/fuuzMcpClient';
 import { TenantDataService } from './services/tenantDataService';
 import { FuuzMcpServerProvider } from './services/mcpServerProvider';
 import { McpJsonWriter } from './services/mcpJsonWriter';
+import { ClaudeMcpWriter, ClaudeTarget } from './services/claudeMcpWriter';
 import { ContextDocWriter } from './services/contextDocWriter';
 import { FuuzApiClient } from './services/fuuzApiClient';
 import { ConnectionImporter } from './services/connectionImporter';
@@ -16,13 +17,19 @@ import { ConfigPanel } from './ui/configPanel';
 import { FuuzStatusBar } from './ui/statusBar';
 import { registerRuntimeCommands } from './ui/runtimeCommands';
 import { ErdPanel } from './ui/erdPanel';
-import { buildModelErd, buildSetErd } from './util/fuuzParse';
+import { buildModelGraph, buildSetGraph } from './util/fuuzParse';
+import type { ErdService } from './util/erdTypes';
+import { fuuzLog } from './services/logger';
+import { isAbortError } from './util/abort';
 
 export async function activate(context: vscode.ExtensionContext) {
   try {
     const tokenStore = new TokenStore(context.secrets);
     const configManager = new TenantConfigurationManager(context, tokenStore);
-    await configManager.migrateLegacyKeys();
+    // Legacy-key migration only does work when enterprises exist; skip the await
+    // entirely for the common "installed but unconfigured" case.
+    const hasConfig = configManager.hasEnterprises();
+    if (hasConfig) await configManager.migrateLegacyKeys();
 
     const health = new ConnectionHealth();
     const mcpClient = new FuuzMcpClient();
@@ -33,6 +40,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const resourceTreeProvider = new ResourceTreeProvider(configManager, resourceService);
     const statusBar = new FuuzStatusBar(configManager, health);
     const mcpJsonWriter = new McpJsonWriter(configManager);
+    const claudeMcpWriter = new ClaudeMcpWriter(configManager, tokenStore, context.extensionUri);
     const contextDocWriter = new ContextDocWriter(configManager, resourceService);
 
     // Register the Fuuz MCP servers with VS Code (guarded for older hosts).
@@ -42,7 +50,7 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.lm.registerMcpServerDefinitionProvider(FuuzMcpServerProvider.PROVIDER_ID, mcpServerProvider)
       );
     } else {
-      console.warn('Fuuz: this VS Code build lacks the MCP API; falling back to .vscode/mcp.json only.');
+      fuuzLog('this VS Code build lacks the MCP API; falling back to .vscode/mcp.json only.');
     }
 
     vscode.window.registerTreeDataProvider('fuuzTenantSelector', tenantSelectorProvider);
@@ -63,6 +71,7 @@ export async function activate(context: vscode.ExtensionContext) {
       resourceTreeProvider.refresh();
       statusBar.update();
       mcpServerProvider.refresh();
+      claudeMcpWriter.scheduleAutoSync();
       ConfigPanel.refreshIfOpen();
       updateResourceMessage();
       void updateContextFlags(configManager);
@@ -73,6 +82,7 @@ export async function activate(context: vscode.ExtensionContext) {
       resourceService,
       resourceTreeProvider,
       mcpJsonWriter,
+      claudeMcpWriter,
       contextDocWriter,
       tokenStore,
       mcpClient,
@@ -87,17 +97,25 @@ export async function activate(context: vscode.ExtensionContext) {
     await updateContextFlags(configManager);
     updateResourceMessage();
 
-    // Auto-refresh the active tenant on startup if its cache is stale (>30 min).
-    void (async () => {
-      const t = configManager.getActiveTenant();
-      if (!t) return;
-      const snap = configManager.getCachedResources(t.id);
-      const ageMs = snap?.lastSyncedAt ? Date.now() - new Date(snap.lastSyncedAt).getTime() : Infinity;
-      if (ageMs > 30 * 60 * 1000) {
-        await resourceService.syncTenantResources(t).catch(() => undefined);
-        onChanged();
-      }
-    })();
+    // Startup IO only matters when connections exist. For an installed-but-
+    // unconfigured workspace, skip the Claude auto-register file reads and the
+    // stale-cache network refresh entirely.
+    if (hasConfig) {
+      // Register existing connections with Claude on startup (per fuuz.claudeAutoRegister).
+      claudeMcpWriter.scheduleAutoSync();
+
+      // Auto-refresh the active tenant on startup if its cache is stale (>30 min).
+      void (async () => {
+        const t = configManager.getActiveTenant();
+        if (!t) return;
+        const snap = configManager.getCachedResources(t.id);
+        const ageMs = snap?.lastSyncedAt ? Date.now() - new Date(snap.lastSyncedAt).getTime() : Infinity;
+        if (ageMs > 30 * 60 * 1000) {
+          await resourceService.syncTenantResources(t).catch(err => fuuzLog(`startup refresh failed: ${errMsg(err)}`));
+          onChanged();
+        }
+      })();
+    }
 
     context.subscriptions.push(
       configManager.onDidChangeActiveTenant(onChanged),
@@ -113,12 +131,13 @@ export async function activate(context: vscode.ExtensionContext) {
       tokenStore,
       configManager,
       mcpServerProvider,
+      claudeMcpWriter,
       health
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     vscode.window.showErrorMessage(`Fuuz extension failed to activate: ${message}`);
-    console.error('Fuuz extension activation failed:', error);
+    fuuzLog(`activation failed: ${message}`);
   }
 }
 
@@ -127,6 +146,7 @@ interface CommandDeps {
   resourceService: TenantDataService;
   resourceTreeProvider: ResourceTreeProvider;
   mcpJsonWriter: McpJsonWriter;
+  claudeMcpWriter: ClaudeMcpWriter;
   contextDocWriter: ContextDocWriter;
   tokenStore: TokenStore;
   mcpClient: FuuzMcpClient;
@@ -136,7 +156,7 @@ interface CommandDeps {
 }
 
 function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
-  const { configManager, resourceService, resourceTreeProvider, mcpJsonWriter, contextDocWriter, connectionImporter, tokenStore, mcpClient, health } = deps;
+  const { configManager, resourceService, resourceTreeProvider, mcpJsonWriter, claudeMcpWriter, contextDocWriter, connectionImporter, tokenStore, mcpClient, health } = deps;
 
   const register = (id: string, fn: (...args: any[]) => any) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
@@ -179,7 +199,8 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     await tokenStore.setToken(enterprise.id, tenant.id, newKey.trim());
     const probe = await mcpClient.initializeMcp(configManager.endpointsFor(enterprise).mcp, newKey.trim());
     health.set(enterprise.id, tenant.id, probe.ok ? 'ok' : 'unauthorized', probe.ok ? undefined : probe.message);
-    await resourceService.syncTenantResources(tenant).catch(() => undefined);
+    resourceService.forgetUnauthorizedWarning(tenant.id); // new key → re-check perms
+    await resourceService.syncTenantResources(tenant).catch(err => fuuzLog(`sync after key replace failed: ${errMsg(err)}`));
     deps.onChanged();
     if (probe.ok) vscode.window.showInformationMessage(`Fuuz: key updated — ${tenant.name} connected.`);
     else vscode.window.showWarningMessage(`Fuuz: key updated but validation failed — ${probe.message}`);
@@ -204,7 +225,7 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
           // Auto-pull resources from MCP so the Resources view populates.
           const tenant = configManager.getTenant(result.enterpriseId, result.tenantId);
           if (tenant) {
-            await resourceService.syncTenantResources(tenant).catch(() => undefined);
+            await resourceService.syncTenantResources(tenant).catch(err => fuuzLog(`initial sync failed: ${errMsg(err)}`));
           }
           deps.onChanged();
           const summary = summarizeProbes(result.probes);
@@ -247,6 +268,7 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       { location: vscode.ProgressLocation.Notification, title: `Syncing ${tenant.name} data…`, cancellable: false },
       async () => {
         try {
+          resourceService.forgetUnauthorizedWarning(tenant.id); // explicit sync → re-check perms
           await resourceService.syncTenantResources(tenant);
           resourceTreeProvider.refresh();
           vscode.window.showInformationMessage(`Synced ${tenant.name} data`);
@@ -272,6 +294,92 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     }
   });
 
+  register('fuuz.registerWithClaude', async () => {
+    const planned = claudeMcpWriter.plannedServers();
+    if (planned.length === 0) {
+      vscode.window.showWarningMessage(
+        'No enabled Fuuz connections to register. Add a connection by API key first.'
+      );
+      return;
+    }
+
+    type TargetPick = vscode.QuickPickItem & { target: ClaudeTarget };
+    const choices: TargetPick[] = [
+      {
+        target: 'user',
+        label: 'Claude Code — all projects (user)',
+        detail: '~/.claude.json · token embedded (private, not committed) · just restart Claude',
+        picked: true,
+      },
+      {
+        target: 'desktop',
+        label: 'Claude Desktop',
+        detail: 'claude_desktop_config.json · token embedded · just restart Claude',
+        picked: true,
+      },
+      {
+        target: 'project',
+        label: 'Claude Code — this project (shareable)',
+        detail: '.mcp.json at the workspace root · token NOT embedded (env var) · safe to commit',
+        picked: false,
+      },
+    ];
+    const selection = await vscode.window.showQuickPick(choices, {
+      canPickMany: true,
+      title: 'Register Fuuz MCP server with Claude',
+      placeHolder: 'User + Desktop embed the token; project uses an env var so it can be committed',
+    });
+    if (!selection || selection.length === 0) return;
+
+    const results = await claudeMcpWriter.sync(selection.map(s => s.target));
+    const wrote = results.filter(r => r.path);
+    const skipped = results.filter(r => r.skipped);
+
+    if (wrote.length === 0) {
+      vscode.window.showWarningMessage(
+        `Couldn't write any Claude config: ${skipped.map(s => `${s.target} (${s.skipped})`).join('; ')}`
+      );
+      return;
+    }
+
+    const missing = [...new Set(wrote.flatMap(r => r.missingToken))];
+    const wroteProject = wrote.some(r => r.tokenMode === 'envref');
+
+    let summary = `Registered ${planned.length} Fuuz server(s) with ${wrote.map(r => r.target).join(', ')}. Restart Claude to load them.`;
+    if (missing.length) summary += ` Skipped (no stored token): ${missing.join(', ')}.`;
+    if (skipped.length) summary += ` ${skipped.map(s => `${s.target} skipped (${s.skipped})`).join('; ')}.`;
+
+    const COPY = 'Copy export commands';
+    const OPEN = 'Open a config file';
+    // Only the project target uses env vars; embed targets need no copy step.
+    const actions = wroteProject ? [COPY, OPEN] : [OPEN];
+    const choice = await vscode.window.showInformationMessage(
+      wroteProject
+        ? `${summary} The project .mcp.json references FUUZ_TOKEN_* env vars — export them for it to connect.`
+        : summary,
+      ...actions
+    );
+
+    if (choice === COPY) {
+      const lines: string[] = [];
+      for (const s of planned) {
+        const token = await tokenStore.getToken(s.enterpriseId, s.tenantId);
+        lines.push(
+          token
+            ? `export ${s.envVar}='${token}'`
+            : `# ${s.envVar}: no stored token for ${s.enterpriseName} › ${s.tenantName} — add the connection's API key`
+        );
+      }
+      await vscode.env.clipboard.writeText(lines.join('\n') + '\n');
+      vscode.window.showInformationMessage(
+        'Export commands copied. Paste them into your shell profile (e.g. ~/.zshrc), then restart Claude.'
+      );
+    } else if (choice === OPEN) {
+      const target = wrote[0];
+      if (target.path) await vscode.window.showTextDocument(vscode.Uri.file(target.path));
+    }
+  });
+
   register('fuuz.generateContextDoc', async () => {
     const uri = await contextDocWriter.write();
     if (uri) {
@@ -289,31 +397,31 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
     const snap = configManager.getCachedResources(tenant.id);
     if (!snap?.mcp) { vscode.window.showWarningMessage('No resources synced yet. Run Sync Tenant Data.'); return; }
-    const items: { label: string; description: string; model: string }[] = [];
+    const items: { label: string; description: string; model: string; service: 'system' | 'application' }[] = [];
     for (const mg of snap.mcp.application ?? []) {
       for (const m of mg.modules ?? []) {
-        for (const dm of m.dataModels ?? []) items.push({ label: dm.name, description: `${mg.name} › ${m.name}`, model: dm.name });
+        for (const dm of m.dataModels ?? []) items.push({ label: dm.name, description: `${mg.name} › ${m.name}`, model: dm.name, service: 'application' });
       }
     }
-    for (const dm of snap.mcp.systemDataModels ?? []) items.push({ label: dm.name, description: 'system', model: dm.name });
+    for (const dm of snap.mcp.systemDataModels ?? []) items.push({ label: dm.name, description: 'system', model: dm.name, service: 'system' });
     const pick = await vscode.window.showQuickPick(items, { title: 'Find Data Model', placeHolder: 'Type to filter; select to open its ERD', matchOnDescription: true });
-    if (pick) await vscode.commands.executeCommand('fuuz.showErd', { node: { name: pick.model } });
+    if (pick) await vscode.commands.executeCommand('fuuz.showErd', { node: { name: pick.model, service: pick.service } });
   });
 
-  register('fuuz.queryModel', async (arg?: any) => {
+  register('fuuz.queryModel', async (arg?: unknown) => {
     const tenant = configManager.getActiveTenant();
     if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
-    let modelName: string | undefined = arg?.node?.name || (typeof arg === 'string' ? arg : undefined);
+    const node = nodeArg(arg);
+    let modelName: string | undefined = node?.name || (typeof arg === 'string' ? arg : undefined);
+    const service: ErdService = node?.service ?? 'application';
     if (!modelName) {
       modelName = await vscode.window.showInputBox({ title: 'Query Data Model', prompt: 'Data model name (e.g. Area)', ignoreFocusOut: true });
     }
     if (!modelName) return;
 
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Fuuz: querying ${modelName}…`, cancellable: false },
-      async () => {
+    await withCancellable(`Fuuz: querying ${modelName}…`, async signal => {
         // Default to the model's scalar fields; let the user pick a subset.
-        const graph = await resourceService.getModelGraph(tenant, modelName!.trim());
+        const graph = await resourceService.getModelGraph(tenant, modelName!.trim(), service, signal);
         const allFields = (graph?.fields ?? []).map(f => f.name);
         let fields = allFields.slice(0, 12);
         if (allFields.length) {
@@ -329,7 +437,7 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
         });
         if (where === undefined) return;
 
-        const result = await resourceService.queryModel(tenant, modelName!.trim(), fields, where);
+        const result = await resourceService.queryModel(tenant, modelName!.trim(), fields, where, service, signal);
         if (!result) { vscode.window.showWarningMessage(`Fuuz: query failed for "${modelName}".`); return; }
         const content =
           `// ${modelName} — ${result.records.length} record(s)\n` +
@@ -356,10 +464,7 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       title: 'Deploy — component type', ignoreFocusOut: true,
     });
     if (!componentType) return;
-    const versionId = await vscode.window.showInputBox({
-      title: `Deploy ${componentType}`, prompt: 'Version id to deploy (e.g. ScreenVersion.id) — look it up via Query Data Model',
-      ignoreFocusOut: true, validateInput: v => (v.trim() ? undefined : 'A version id is required'),
-    });
+    const versionId = await pickVersionId(resourceService, tenant, componentType);
     if (!versionId) return;
 
     const warn = componentType === 'dataModel'
@@ -378,16 +483,13 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       forceStop = fs === 'Yes';
     }
 
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Fuuz: deploying ${componentType}…`, cancellable: false },
-      async () => {
-        const out = await resourceService.deployComponent(tenant, componentType, versionId.trim(), { forceStopPreviousVersions: forceStop });
+    await withCancellable(`Fuuz: deploying ${componentType}…`, async signal => {
+        const out = await resourceService.deployComponent(tenant, componentType, versionId.trim(), { forceStopPreviousVersions: forceStop }, signal);
         const content = `// deploy ${componentType} version ${versionId}\n${out || '(no response)'}`;
         const doc = await vscode.workspace.openTextDocument({ language: 'json', content });
         await vscode.window.showTextDocument(doc, { preview: true });
         vscode.window.showInformationMessage(`Fuuz: deploy requested for ${componentType}. ${componentType === 'dataModel' ? 'Data-model deploys run asynchronously — check status in Fuuz.' : ''}`);
-      }
-    );
+    });
   });
 
   register('fuuz.openInFuuz', async () => {
@@ -399,77 +501,9 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     await vscode.env.openExternal(vscode.Uri.parse(host));
   });
 
-  register('fuuz.showErd', async (arg?: any) => {
-    const tenant = configManager.getActiveTenant();
-    if (!tenant) {
-      vscode.window.showWarningMessage('Select an active Fuuz tenant first.');
-      return;
-    }
-    let modelName: string | undefined = arg?.node?.name || (typeof arg === 'string' ? arg : undefined);
-    if (!modelName) {
-      modelName = await vscode.window.showInputBox({
-        title: 'Show ERD',
-        prompt: 'Data model name (e.g. Area)',
-        ignoreFocusOut: true,
-        validateInput: v => (v.trim() ? undefined : 'A model name is required'),
-      });
-    }
-    if (!modelName) return;
-
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Fuuz: building ERD for ${modelName}…`, cancellable: false },
-      async () => {
-        const [graph, refs] = await Promise.all([
-          resourceService.getModelGraph(tenant, modelName!.trim()),
-          resourceService.getReferences(tenant),
-        ]);
-        if (!graph) {
-          vscode.window.showWarningMessage(`Fuuz: couldn't load model "${modelName}".`);
-          return;
-        }
-        const mermaid = buildModelErd(graph, refs);
-        ErdPanel.show(context, graph.name, mermaid, 'Outbound relations and inbound references for this data model.');
-      }
-    );
-  });
-
-  // ERD for a whole module (the data models within it).
-  register('fuuz.showModuleErd', async (arg?: any) => {
-    const tenant = configManager.getActiveTenant();
-    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
-    const models: string[] = (arg?.node?.dataModels ?? []).map((d: any) => d.name).filter(Boolean);
-    const moduleName: string = arg?.node?.name ?? 'Module';
-    if (models.length === 0) { vscode.window.showInformationMessage(`Fuuz: "${moduleName}" has no data models.`); return; }
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Fuuz: building ERD for ${moduleName}…`, cancellable: false },
-      async () => {
-        const refs = await resourceService.getReferences(tenant);
-        ErdPanel.show(context, moduleName, buildSetErd(models, refs), `${models.length} data models in this module and their relationships.`);
-      }
-    );
-  });
-
-  // ERD for the whole application (all app data models; relationships among them).
-  register('fuuz.showAppErd', async () => {
-    const tenant = configManager.getActiveTenant();
-    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'Fuuz: building application ERD…', cancellable: false },
-      async () => {
-        const resources = await resourceService.getTenantResources(tenant);
-        const models: string[] = [];
-        for (const mg of resources?.mcp?.application ?? []) {
-          for (const m of mg.modules ?? []) {
-            for (const dm of m.dataModels ?? []) if (dm.name) models.push(dm.name);
-          }
-        }
-        if (models.length === 0) { vscode.window.showInformationMessage('Fuuz: no application data models to diagram.'); return; }
-        const refs = await resourceService.getReferences(tenant);
-        const note = `${models.length} application data models. Large diagrams may render slowly — use Export .mmd for the full graph.`;
-        ErdPanel.show(context, `${tenant.name} — Application`, buildSetErd(models, refs), note);
-      }
-    );
-  });
+  // ERD commands (single model / module / whole application) live in their own
+  // registrar to keep this function focused — mirrors registerRuntimeCommands.
+  registerErdCommands(context, configManager, resourceService);
 
   register('fuuz.createTool', async () => {
     const enterprise = configManager.getActiveEnterprise();
@@ -496,6 +530,144 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
   });
 }
 
+/** Component type → the data model that holds its deployable versions. */
+const VERSION_MODELS: Record<string, string> = {
+  screen: 'ScreenVersion',
+  dataFlow: 'DataFlowVersion',
+  dataModel: 'DataModelVersion',
+  savedTransform: 'SavedTransformVersion',
+};
+
+/**
+ * Resolve a version id to deploy: offer a quick-pick of the component's recent
+ * versions (queried from its `*Version` model), with a manual-entry fallback.
+ * Degrades gracefully to a plain input box if the lookup finds nothing or fails
+ * (e.g. the model name/fields differ for this tenant).
+ */
+async function pickVersionId(
+  resourceService: TenantDataService,
+  tenant: import('./types').Tenant,
+  componentType: string
+): Promise<string | undefined> {
+  const model = VERSION_MODELS[componentType];
+  let items: vscode.QuickPickItem[] = [];
+  if (model) {
+    const res = await resourceService.queryModel(tenant, model, ['id', 'name'], '{}', 'application').catch(() => null);
+    items = (res?.records ?? [])
+      .map(r => (r.name ? { label: r.name, description: r.id } : { label: r.id }))
+      .filter(i => i.label);
+  }
+
+  const MANUAL = '$(edit) Enter a version id manually…';
+  if (items.length) {
+    const pick = await vscode.window.showQuickPick([...items, { label: MANUAL }], {
+      title: `Deploy ${componentType} — choose a version`,
+      placeHolder: 'Select a version, or enter an id manually',
+      matchOnDescription: true,
+      ignoreFocusOut: true,
+    });
+    if (!pick) return undefined;
+    if (pick.label !== MANUAL) return (pick.description || pick.label).trim() || undefined;
+  }
+
+  const manual = await vscode.window.showInputBox({
+    title: `Deploy ${componentType}`,
+    prompt: 'Version id to deploy (look it up via Query Data Model)',
+    ignoreFocusOut: true,
+    validateInput: v => (v.trim() ? undefined : 'A version id is required'),
+  });
+  return manual?.trim() || undefined;
+}
+
+/** Register the ERD diagram commands (single model, module, whole application). */
+function registerErdCommands(
+  context: vscode.ExtensionContext,
+  configManager: TenantConfigurationManager,
+  resourceService: TenantDataService
+) {
+  const register = (id: string, fn: (...args: any[]) => any) =>
+    context.subscriptions.push(vscode.commands.registerCommand(id, fn));
+
+  register('fuuz.showErd', async (arg?: unknown) => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) {
+      vscode.window.showWarningMessage('Select an active Fuuz tenant first.');
+      return;
+    }
+    const node = nodeArg(arg);
+    let modelName: string | undefined = node?.name || (typeof arg === 'string' ? arg : undefined);
+    if (!modelName) {
+      modelName = await vscode.window.showInputBox({
+        title: 'Show ERD',
+        prompt: 'Data model name (e.g. Area)',
+        ignoreFocusOut: true,
+        validateInput: v => (v.trim() ? undefined : 'A model name is required'),
+      });
+    }
+    if (!modelName) return;
+
+    const service: ErdService = node?.service ?? 'application';
+    await withCancellable(`Fuuz: building ERD for ${modelName}…`, async signal => {
+      const [graph, refs] = await Promise.all([
+        resourceService.getModelGraph(tenant, modelName!.trim(), service, signal),
+        resourceService.getReferences(tenant, service, signal),
+      ]);
+      if (!graph) {
+        vscode.window.showWarningMessage(`Fuuz: couldn't load model "${modelName}".`);
+        return;
+      }
+      ErdPanel.show(context, {
+        title: graph.name,
+        graph: buildModelGraph(graph, refs, service),
+        layoutKey: `${tenant.id}:model:${graph.name}`,
+        ...erdLoaders(resourceService, tenant),
+      });
+    });
+  });
+
+  // ERD for a whole module (the data models within it).
+  register('fuuz.showModuleErd', async (arg?: unknown) => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const node = nodeArg(arg);
+    const models: string[] = (node?.dataModels ?? []).map(d => d.name).filter((n): n is string => !!n);
+    const moduleName: string = node?.name ?? 'Module';
+    if (models.length === 0) { vscode.window.showInformationMessage(`Fuuz: "${moduleName}" has no data models.`); return; }
+    await withCancellable(`Fuuz: building ERD for ${moduleName}…`, async signal => {
+      const refs = await resourceService.getReferences(tenant, 'application', signal);
+      ErdPanel.show(context, {
+        title: moduleName,
+        graph: buildSetGraph(models, refs, 'application'),
+        layoutKey: `${tenant.id}:module:${moduleName}`,
+        ...erdLoaders(resourceService, tenant),
+      });
+    });
+  });
+
+  // ERD for the whole application (all app data models; relationships among them).
+  register('fuuz.showAppErd', async () => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    await withCancellable('Fuuz: building application ERD…', async signal => {
+      const resources = await resourceService.getTenantResources(tenant);
+      const models: string[] = [];
+      for (const mg of resources?.mcp?.application ?? []) {
+        for (const m of mg.modules ?? []) {
+          for (const dm of m.dataModels ?? []) if (dm.name) models.push(dm.name);
+        }
+      }
+      if (models.length === 0) { vscode.window.showInformationMessage('Fuuz: no application data models to diagram.'); return; }
+      const refs = await resourceService.getReferences(tenant, 'application', signal);
+      ErdPanel.show(context, {
+        title: `${tenant.name} — Application`,
+        graph: buildSetGraph(models, refs, 'application'),
+        layoutKey: `${tenant.id}:app`,
+        ...erdLoaders(resourceService, tenant),
+      });
+    });
+  });
+}
+
 /** Prompt that kicks off a guided, agentic data-flow build via the Fuuz MCP server. */
 function buildCreateToolPrompt(enterpriseName: string, tenantName: string, environment: string | undefined, serverName: string): string {
   return [
@@ -508,7 +680,7 @@ function buildCreateToolPrompt(enterpriseName: string, tenantName: string, envir
     ``,
     `Please walk me through building this tool step by step. Specifically:`,
     `1. Ask me what the tool should do, its inputs, and its outputs.`,
-    `2. Use the Fuuz MCP tools to gather the context you need — e.g. \`system_list_models\` and \`system_query_model\` to find relevant data models, \`data_flow_data_model_details\` for schemas, and \`data_flow_data_flow_details\` / \`data_flow_dataflow_diagram_flow\` to learn from existing data flows.`,
+    `2. Use the Fuuz MCP tools to gather the context you need — e.g. \`system_list_models\` and \`system_query_model\` to find relevant data models, \`system_list_model_fields\` (and \`system_list_model_references\`) for schemas and relationships, and \`data_flow_data_flow_details\` / \`data_flow_dataflow_diagram_flow\` to learn from existing data flows.`,
     `2. Propose a data-flow design (nodes, inputs, transforms, outputs) and confirm it with me before making changes.`,
     `3. Create or update the data flow using \`system_data_flow_mutations\`, then summarize what was created and how to deploy/test it.`,
     ``,
@@ -524,6 +696,72 @@ async function updateContextFlags(configManager: TenantConfigurationManager) {
 
 function errMsg(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The argument the resource tree (and `findResource`) hand to ERD/query commands:
+ * either a `ResourceItem` (whose `.node` holds the underlying record) or a
+ * synthetic `{ node: { name, service } }`. Typed so commands stop reaching into
+ * `any`.
+ */
+interface ResourceCommandArg {
+  node?: {
+    name?: string;
+    service?: ErdService;
+    id?: string;
+    type?: string;
+    dataModels?: Array<{ name?: string }>;
+  };
+}
+
+/** Narrow an unknown command arg to the tree's node shape. */
+function nodeArg(arg: unknown): ResourceCommandArg['node'] {
+  return arg && typeof arg === 'object' ? (arg as ResourceCommandArg).node : undefined;
+}
+
+/**
+ * Build the lazy `loadFields` / `loadNeighbors` callbacks every ERD command needs
+ * (expand a node's fields; grow the graph by a model's neighbors). Centralized so
+ * the three ERD commands don't each repeat the same two closures.
+ */
+function erdLoaders(resourceService: TenantDataService, tenant: import('./types').Tenant): {
+  loadFields: (name: string, svc: ErdService) => Promise<import('./util/erdTypes').ErdField[]>;
+  loadNeighbors: (name: string, svc: ErdService) => Promise<import('./util/erdTypes').ErdGraph>;
+} {
+  return {
+    loadFields: async (name, svc) => (await resourceService.getModelGraph(tenant, name, svc))?.fields ?? [],
+    loadNeighbors: async (name, svc) => {
+      const [g, r] = await Promise.all([
+        resourceService.getModelGraph(tenant, name, svc),
+        resourceService.getReferences(tenant, svc),
+      ]);
+      return g ? buildModelGraph(g, r, svc) : { nodes: [], edges: [] };
+    },
+  };
+}
+
+/**
+ * Run work inside a cancellable progress notification, exposing an AbortSignal
+ * wired to the cancel button. Returns the work's result, or `undefined` when the
+ * user cancels (callers treat that as a quiet no-op).
+ */
+function withCancellable<T>(title: string, fn: (signal: AbortSignal) => Promise<T>): Thenable<T | undefined> {
+  return vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+    async (_progress, token) => {
+      const controller = new AbortController();
+      token.onCancellationRequested(() => controller.abort());
+      try {
+        return await fn(controller.signal);
+      } catch (err) {
+        if (isAbortError(err)) {
+          fuuzLog(`${title} — cancelled`);
+          return undefined;
+        }
+        throw err;
+      }
+    }
+  );
 }
 
 /** One-line per-endpoint availability summary, e.g. "MCP ✓ · Flow ✗ · Webhook ✗". */

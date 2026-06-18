@@ -1,0 +1,88 @@
+@import '@xyflow/react/dist/style.css';
+
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+.app { display: flex; flex-direction: column; height: 100%; }
+
+.toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-bottom: 1px solid var(--vscode-panel-border);
+}
+.toolbar h1 { font-size: 13px; margin: 0; font-weight: 600; }
+.toolbar .spacer { flex: 1; }
+.toolbar button {
+  padding: 3px 10px; border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 3px; cursor: pointer; font-size: 12px;
+  background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
+}
+.toolbar button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.toolbar input {
+  padding: 3px 8px; border-radius: 3px; font-size: 12px; min-width: 180px;
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+}
+.flow { flex: 1; min-height: 0; }
+
+/* --- Entity node --- */
+.entity {
+  min-width: 180px; max-width: 260px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px; overflow: hidden;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  font-size: 12px;
+}
+.entity.focal { border-color: var(--vscode-focusBorder); border-width: 2px; }
+.entity.dimmed { opacity: 0.35; }
+.entity.highlighted { border-color: var(--vscode-focusBorder); box-shadow: 0 0 0 2px var(--vscode-focusBorder); }
+
+.entity-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; cursor: pointer;
+  background: var(--vscode-editorWidget-border, rgba(128,128,128,0.12));
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+.entity-header:hover { background: var(--vscode-list-hoverBackground); }
+.entity-name { font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chev { display: inline-block; transition: transform 0.12s ease; color: var(--vscode-descriptionForeground); font-size: 10px; }
+.chev.open { transform: rotate(90deg); }
+.badge {
+  font-size: 10px; padding: 0 5px; border-radius: 8px;
+  background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+}
+.rel-count {
+  font-size: 10px; min-width: 16px; text-align: center; padding: 0 4px; border-radius: 8px;
+  background: var(--vscode-activityBarBadge-background, var(--vscode-badge-background));
+  color: var(--vscode-activityBarBadge-foreground, var(--vscode-badge-foreground));
+}
+.rel-count.expanded-mark { background: transparent; color: var(--vscode-charts-green, #4caf50); }
+.entity-query {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--vscode-descriptionForeground); font-size: 13px; line-height: 1;
+  padding: 2px 4px; border-radius: 4px; opacity: 0.55;
+}
+.entity-header:hover .entity-query { opacity: 1; }
+.entity-query:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-foreground); }
+.spinner { display: inline-block; animation: fuuz-spin 1s linear infinite; color: var(--vscode-descriptionForeground); }
+@keyframes fuuz-spin { to { transform: rotate(360deg); } }
+.toolbar .hint { font-size: 11px; color: var(--vscode-descriptionForeground); }
+
+.entity-body { max-height: 280px; overflow-y: auto; }
+.field {
+  display: flex; justify-content: space-between; gap: 10px;
+  padding: 2px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+}
+.field:last-child { border-bottom: none; }
+.field-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.field-type { color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.muted { padding: 6px 8px; color: var(--vscode-descriptionForeground); font-style: italic; }
+
+/* React Flow edge labels follow the theme */
+.react-flow__edge-text { fill: var(--vscode-foreground); font-size: 10px; }
+.react-flow__edge-textbg { fill: var(--vscode-editor-background); }
+.react-flow__handle { opacity: 0; }

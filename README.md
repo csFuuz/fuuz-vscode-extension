@@ -32,6 +32,38 @@ code --install-extension fuuz-vscode-extension-<version>.vsix
 > `AVAILABLE.md` is tenant-specific). `.vscode/mcp.json` is safe to commit — the
 > token is referenced via a password prompt, not stored.
 
+## Permissions (important)
+
+Connecting and **listing** MCP tools needs no special authorization — but
+**using** the tools (loading resources, querying data, running flows) requires
+the API key's **API User** to be authorized **inside Fuuz**, per tenant/app.
+
+In each Fuuz tenant/app you want to use, assign a **policy or policy group**
+directly to the **API User record** that owns the key, granting at least the
+**read/query** actions for the modules the extension reads:
+
+- `accessControl` — environment/current-user info
+- `configuration` — module groups, modules, screens, the model catalog
+- `dataModeling` — data models
+- `orchestration` — data flows
+- (plus any business modules whose data you want to **Query Data Model**)
+
+To **execute flows**, **send webhooks**, or **deploy**, the API User also needs
+the corresponding write/execute permissions for those modules.
+
+> **After granting policies, issue a *new* API key** for that tenant and update
+> the connection with **Replace API Key**. An existing key does **not** pick up
+> newly-assigned policies — permissions are bound when the key is issued.
+
+> If the API User isn't authorized, the MCP server still **lists** the tools, so
+> the **MCP Tools** section appears — but every data call is rejected with
+> *"not authorized to execute the query action…"*, leaving the **Application**,
+> **System Data Models**, and **Environment** sections empty. The extension shows
+> these denials under a **"Couldn't load some resources"** node and in the
+> **Fuuz** output channel (View → Output → Fuuz). The fix is to grant the policy
+> in Fuuz — it is **not** a VS Code/extension setting. Authorization is
+> **per tenant**, so it must be assigned in each tenant/app separately.
+
 ## Quick start
 
 1. Install the extension and open the **Fuuz** icon in the activity bar.
@@ -75,12 +107,19 @@ tenant's Bearer token, stored in VS Code **SecretStorage** — never in
   an HTTP MCP server so Copilot/agent mode can use it. **Write MCP Server Config**
   also emits a portable `.vscode/mcp.json` (the token is referenced via a password
   `input`, not written to disk).
+- **Register with Claude** — VS Code's MCP registration is **only visible to VS
+  Code's own Copilot**; Claude reads its own config. **Register MCP Server with
+  Claude** writes the Fuuz servers into Claude Code (`.mcp.json` and/or user
+  `~/.claude.json`) and Claude Desktop. See
+  [Use with Claude](#use-with-claude-claude-code--claude-desktop).
 - **Auto-loaded resources** — on connect, the extension opens an MCP session and
   pulls the environment/context info and the catalog of available MCP tools into
   the **Resources** view.
 - **Runtime actions** — **Execute Flow** (`{ flowId, payload }`; also inline on
   Flow nodes) and **Send Webhook** (`{topic}` + JSON body). Responses open in a
-  JSON editor; the `Fuuz` output channel logs each call.
+  JSON editor; the `Fuuz` output channel logs each call. Flows are grouped by
+  type (Edge / Webflow / Backend); **web flows** run in the Fuuz web UI, so
+  Execute is hidden for them.
 - **Connection management** — set active, **Replace key**, **Disable/Enable**, and
   remove connections from the config panel.
 - **Agent tool control** — the config panel's **Agent Tools** section lists the
@@ -117,6 +156,53 @@ moduleGroup
 └─ graphql (queries / mutations)
 ```
 
+## Use with Claude (Claude Code / Claude Desktop)
+
+VS Code's MCP registration (`registerMcpServerDefinitionProvider`) is consumed
+**only by VS Code's own Copilot/agent mode** — Claude can't see it. Each MCP
+client reads its own config, so to make Fuuz reachable from Claude the extension
+writes the servers into Claude's config files.
+
+### Automatic (default)
+
+With `fuuz.claudeAutoRegister` set to `userAndDesktop` (the default), the
+extension keeps Claude in sync for you: whenever you **add a connection**,
+**replace a key**, or **enable/disable** one, it rewrites the Claude config. So
+the whole flow is just **connect an API key → restart Claude**. No command, no
+env vars, no copy/paste.
+
+| Target | Where it writes | Token |
+| --- | --- | --- |
+| Claude Code — user | `~/.claude.json` | **Embedded** (private home-dir config, mode 600, never committed) |
+| Claude Desktop | `claude_desktop_config.json` | **Embedded** via the bundled stdio proxy (`proxy/mcp-proxy.js`) |
+
+The live token is embedded into these private files exactly the way every other
+MCP server stores its auth — and it's **refreshed automatically** when you
+**Replace API Key**. Set `fuuz.claudeAutoRegister` to `user` (Claude Code only)
+or `off` (manual only) to change this. Only `fuuz-*` keys are managed; everything
+else in the files is preserved.
+
+> **Restart Claude** after a change — Claude loads MCP servers at startup, so a
+> running session won't see new/updated Fuuz servers until it's restarted.
+
+> **Claude Desktop** launched from Finder uses the absolute `node` path the
+> extension bakes into the config (it needs **Node 18+**). If no `node` is found
+> it falls back to a bare `node`, which must be on the launch environment's PATH.
+
+### Project scope (shareable, opt-in)
+
+Run **Fuuz: Register MCP Server with Claude** and also tick **Claude Code — this
+project** to write a `.mcp.json` at the workspace root. This file is meant to be
+**committed and shared**, so the token is **never embedded** — entries reference
+`Bearer ${FUUZ_TOKEN_<ENTERPRISE>_<TENANT>}`. The command's **Copy export
+commands** action copies the matching `export FUUZ_TOKEN_…='<token>'` lines to
+your clipboard; paste them into your shell profile (e.g. `~/.zshrc`) and restart
+Claude.
+
+> A project-scope server **shadows** a user-scope server with the same name in
+> Claude Code. If you commit a project `.mcp.json`, make sure collaborators export
+> the env vars, or that entry won't connect.
+
 ## Subscription & feature availability
 
 The Fuuz MCP server is gated by your subscription. **If your subscription does not
@@ -133,13 +219,18 @@ view falls back to a manual state — you provide resource details by configurin
 flows in Fuuz. Per-endpoint results can also differ by key: a key may be valid for
 MCP but not for flow/webhook (or vice-versa), and the badges make that explicit.
 
+Separately from your subscription, what the extension can load depends on the API
+User's **authorization in Fuuz** — see [Permissions](#permissions-important). MCP
+*reachable* but resources *empty* almost always means the API User lacks the
+read/query policy in that tenant.
+
 ## Commands
 
 - **Fuuz: Add Connection by API Key** — onboard a connection from a key
 - **Fuuz: Configure Connections** — open the connection management panel
 - **Fuuz: Select Active Tenant** — quick-pick the active enterprise/tenant
 - **Fuuz: Sync Tenant Data** — refresh the Resources view for the active tenant
-- **Fuuz: Show ERD** / **Show Module ERD** / **Show Application ERD** — entity-relationship diagrams (with Export .mmd)
+- **Fuuz: Show ERD** / **Show Module ERD** / **Show Application ERD** — interactive entity-relationship diagrams (drag nodes, expand fields, persisted layout)
 - **Fuuz: Find Data Model** — quick-pick search that opens a model's ERD
 - **Fuuz: Query Data Model** — read-only data query (pick fields + JSON filter)
 - **Fuuz: Execute Flow** — run a data flow
@@ -148,6 +239,7 @@ MCP but not for flow/webhook (or vice-versa), and the badges make that explicit.
 - **Fuuz: Create New Tool (Data Flow)** — guided Copilot chat to build a tool
 - **Fuuz: Open in Fuuz** — open the active tenant's app
 - **Fuuz: Write MCP Server Config (.vscode/mcp.json)** — emit/refresh workspace MCP config
+- **Fuuz: Register MCP Server with Claude** — write the Fuuz servers into Claude Code / Claude Desktop config
 - **Fuuz: Generate App Context File** — write `.fuuz/AVAILABLE.md`
 - **Fuuz: Replace API Key** / **Open Settings**
 
@@ -156,9 +248,16 @@ MCP but not for flow/webhook (or vice-versa), and the badges make that explicit.
 - **Key reports unauthorized / "not active"** — the per-endpoint badges show the
   HTTP status and server message per endpoint. An inactive/expired key returns
   401; request a fresh key.
-- **Resources view empty** — run **Sync Tenant Data**. If it stays empty, MCP may
-  not be available for your subscription/key; configure flows in Fuuz to provide
-  resources manually.
+- **Only "MCP Tools" show / Application & data models empty** — the API User
+  isn't authorized in that tenant. Open the **"Couldn't load some resources"**
+  node (or View → Output → **Fuuz**); messages like *"not authorized to execute
+  the query action on … in the configuration module"* tell you exactly which
+  modules to grant. Assign the read/query **policy/policy group** to the API User
+  in Fuuz for that tenant — see [Permissions](#permissions-important) — then
+  **Sync Tenant Data**.
+- **Resources view still empty after granting access** — run **Sync Tenant Data**
+  (it clears caches). If MCP itself isn't available for your subscription, the
+  view falls back to a manual state; configure flows in Fuuz instead.
 - **MCP server not appearing for Copilot** — confirm the tenant is enabled (not
   disabled) and has a token, then reload the window. You can also run **Write MCP
   Server Config** to materialize `.vscode/mcp.json`.
@@ -166,17 +265,20 @@ MCP but not for flow/webhook (or vice-versa), and the badges make that explicit.
 ## Development
 
 ```bash
-npm install        # install dev dependencies
-npm run compile    # type-check + build to dist/
-npm run watch      # rebuild on change
-npm run lint       # eslint
+npm install          # install dev dependencies
+npm run compile      # tsc → dist/ AND bundle the ERD webview → media/erd/
+npm run watch        # rebuild extension host on change
+npm run watch:webview # rebuild the ERD webview on change
+npm run lint         # eslint
 npx @vscode/vsce package --no-dependencies   # build a .vsix
 ```
 
-The extension has **no runtime dependencies** — it uses the VS Code API and the
-runtime's global `fetch`. Requires VS Code **1.101+** (for the MCP server
-definition API). Run `npm test` for the unit suite (pure parsing/derivation/ERD
-helpers, via `node:test`).
+The **extension host** has **no runtime dependencies** — it uses the VS Code API
+and the runtime's global `fetch`. The **ERD webview** is a separate React + React
+Flow app under `src/webview/erd/`, bundled by esbuild into `media/erd/` (a build
+asset, like an image); React etc. are devDependencies, not host runtime deps.
+Requires VS Code **1.101+** (for the MCP server definition API). Run `npm test`
+for the unit suite (pure parsing/derivation/ERD helpers, via `node:test`).
 
 ### Publishing
 
@@ -200,10 +302,12 @@ org SLA. To re-home it, change `publisher` in `package.json`.
   - `fuuzApiClient.ts` — flow execution / webhook POST client
   - `mcpServerProvider.ts` — registers Fuuz MCP servers with VS Code
   - `mcpJsonWriter.ts` — generates `.vscode/mcp.json`
+  - `claudeMcpWriter.ts` — registers the Fuuz servers into Claude Code / Claude Desktop config
   - `contextDocWriter.ts` — generates `.fuuz/AVAILABLE.md`
   - `tenantDataService.ts` — sync + cache resources
 - **Providers**: `tenantSelectorProvider.ts` (Connections), `resourceTreeProvider.ts` (Resources)
-- **UI**: `ui/configPanel.ts` (webview), `ui/statusBar.ts`, `ui/runtimeCommands.ts`
+- **UI**: `ui/configPanel.ts` (webview), `ui/statusBar.ts`, `ui/runtimeCommands.ts`, `ui/erdPanel.ts` (hosts the ERD webview)
+- **ERD webview**: `src/webview/erd/` — React + React Flow app, bundled to `media/erd/` by esbuild; consumes the `ErdGraph` from `util/erdTypes.ts`
 - **Entry point**: `extension.ts`
 
 ## License

@@ -4,6 +4,9 @@ import { TenantConfigurationManager } from '../services/tenantConfigurationManag
 import { TokenStore } from '../services/tokenStore';
 import { FuuzApiClient, ApiResult } from '../services/fuuzApiClient';
 import { ConnectionHealth } from '../services/connectionHealth';
+import { fuuzChannel } from '../services/logger';
+import { isWebflowType } from '../util/fuuzParse';
+import { isAbortError } from '../util/abort';
 
 interface RuntimeDeps {
   configManager: TenantConfigurationManager;
@@ -19,7 +22,7 @@ interface ActiveContext {
   endpoints: EnterpriseEndpoints;
 }
 
-const output = vscode.window.createOutputChannel('Fuuz');
+const output = fuuzChannel();
 
 /**
  * Registers the runtime endpoint commands (Execute Flow, Send Webhook, Run
@@ -48,6 +51,15 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext, deps: 
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
   register('fuuz.executeFlow', async (arg?: unknown) => {
+    // Web flows run inside the Fuuz web UI and can't be executed from VS Code.
+    const flowNode = (arg as any)?.node ?? (arg as any)?.data;
+    if (isWebflowType(flowNode?.type)) {
+      vscode.window.showWarningMessage(
+        `Fuuz: "${flowNode?.name ?? 'This flow'}" is a web flow and can't be executed from VS Code — run it from the Fuuz web app.`
+      );
+      return;
+    }
+
     const ctx = await resolve();
     if (!ctx) return;
 
@@ -64,8 +76,8 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext, deps: 
     const payload = await promptJson('Flow payload (JSON)', '{}');
     if (payload === undefined) return;
 
-    await run(`Executing flow ${flowId}`, `executeFlow ${flowId}`, ctx.endpoints.flowExecution, () =>
-      apiClient.executeFlow(ctx.endpoints, ctx.token, flowId.trim(), payload), ctx, deps.health
+    await run(`Executing flow ${flowId}`, `executeFlow ${flowId}`, ctx.endpoints.flowExecution, signal =>
+      apiClient.executeFlow(ctx.endpoints, ctx.token, flowId.trim(), payload, signal), ctx, deps.health
     );
   });
 
@@ -86,8 +98,8 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext, deps: 
     if (body === undefined) return;
 
     const url = `${ctx.endpoints.webhook.replace(/\/$/, '')}/${topic.trim().replace(/^\//, '')}`;
-    await run(`Sending webhook ${topic}`, `webhook ${topic}`, url, () =>
-      apiClient.sendWebhook(ctx.endpoints, ctx.token, topic.trim(), body), ctx, deps.health
+    await run(`Sending webhook ${topic}`, `webhook ${topic}`, url, signal =>
+      apiClient.sendWebhook(ctx.endpoints, ctx.token, topic.trim(), body, signal), ctx, deps.health
     );
   });
 }
@@ -97,15 +109,17 @@ async function run(
   progressTitle: string,
   label: string,
   url: string,
-  call: () => Promise<ApiResult>,
+  call: (signal: AbortSignal) => Promise<ApiResult>,
   ctx?: ActiveContext,
   health?: ConnectionHealth
 ): Promise<void> {
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: `Fuuz: ${progressTitle}…`, cancellable: false },
-    async () => {
+    { location: vscode.ProgressLocation.Notification, title: `Fuuz: ${progressTitle}…`, cancellable: true },
+    async (_progress, token) => {
+      const controller = new AbortController();
+      token.onCancellationRequested(() => controller.abort());
       try {
-        const result = await call();
+        const result = await call(controller.signal);
         await showResult(label, url, result);
         if (result.status === 401 || result.status === 403) {
           if (ctx && health) health.set(ctx.enterprise.id, ctx.tenant.id, 'unauthorized', `HTTP ${result.status}`);
@@ -123,6 +137,10 @@ async function run(
           vscode.window.showWarningMessage(`Fuuz: ${label} → HTTP ${result.status}`);
         }
       } catch (error) {
+        if (isAbortError(error)) {
+          output.appendLine(`[${label}] cancelled`);
+          return;
+        }
         const message = error instanceof Error ? error.message : String(error);
         output.appendLine(`[${label}] ERROR ${message}`);
         vscode.window.showErrorMessage(`Fuuz: ${label} failed — ${message}`);

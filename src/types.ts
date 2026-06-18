@@ -109,13 +109,20 @@ export interface Flow {
   id: string;
   name: string;
   description?: string;
+  /** Flow type name (e.g. Edge, Webflow, Backend), when resolved from DataFlowType. */
+  type?: string;
 }
+
+/** Which Fuuz service catalog a model belongs to — selects the MCP `service` arg. */
+export type ModelService = 'system' | 'application';
 
 export interface DataModel {
   id: string;
   name: string;
   description?: string;
   fields: DataModelField[];
+  /** Catalog the model lives in; drives the `service` arg on field/relation calls. */
+  service?: ModelService;
 }
 
 export interface DataModelField {
@@ -175,6 +182,8 @@ export interface McpSnapshot {
   application: ModuleGroup[];
   /** Data models flagged as system (vs application/custom). */
   systemDataModels: DataModel[];
+  /** Discovery problems (e.g. authorization errors) so failures aren't silent. */
+  issues: string[];
 }
 
 /**

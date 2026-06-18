@@ -3,16 +3,20 @@ import assert from 'node:assert/strict';
 import {
   classifyTool,
   parseTronRecords,
+  parseModelFieldRecords,
+  baseType,
+  isRelationType,
   extractModelNames,
   assembleApplication,
   decodeJwt,
   environmentFromClaims,
   namesFrom,
   deriveEndpoints,
-  toMermaid,
   parseReferences,
-  buildModelErd,
-  buildSetErd,
+  relationshipEdges,
+  buildModelGraph,
+  buildSetGraph,
+  isWebflowType,
 } from '../util/fuuzParse';
 
 test('classifyTool: only system_ is system; everything else is a data flow', () => {
@@ -41,6 +45,30 @@ test('parseTronRecords: flat class with quoted values incl parens/commas', () =>
 
 test('parseTronRecords: no class def returns empty', () => {
   assert.deepEqual(parseTronRecords('no tron here'), []);
+});
+
+test('parseTronRecords: capital-letter-paren inside a value does not spawn phantom records', () => {
+  // "Step B(2)" contains `B(` — the declared class letter is A, but a naive
+  // `/[A-Z]\(/g` scan would treat `B(` inside the quoted value as a tuple start.
+  const tron = [
+    'class A: id,name',
+    '[A("wiring","Step B(2) wiring")]',
+  ].join('\n');
+  const recs = parseTronRecords(tron);
+  assert.equal(recs.length, 1);
+  assert.deepEqual(recs[0], { id: 'wiring', name: 'Step B(2) wiring' });
+});
+
+test('parseTronRecords: even the declared class letter inside a value is ignored', () => {
+  // Value contains `A(` — same letter as the class. Must not become a record.
+  const tron = [
+    'class A: id,name',
+    '[A("x","see A(ppendix) for detail"),A("y","plain")]',
+  ].join('\n');
+  const recs = parseTronRecords(tron);
+  assert.equal(recs.length, 2);
+  assert.equal(recs[0].name, 'see A(ppendix) for detail');
+  assert.equal(recs[1].id, 'y');
 });
 
 test('extractModelNames: pulls unique sorted tuple names', () => {
@@ -118,22 +146,67 @@ test('parseReferences: maps edges + cardinality, drops audit/metadata noise', ()
   assert.ok(back && back.many === false);
 });
 
-test('buildModelErd: includes inbound references as edges', () => {
-  const graph = { name: 'Area', fields: [{ name: 'code', type: 'String!' }], relations: [{ field: 'workcenters', target: 'Workcenter', many: true }] };
-  const refs = [{ from: 'WorkOrder', to: 'Area', label: 'areaId', many: false }];
-  const mer = buildModelErd(graph, refs);
-  assert.match(mer, /Area \|\|--o\{ Workcenter : workcenters/); // outbound
-  assert.match(mer, /WorkOrder \}o--\|\| Area : areaId/);        // inbound
+test('isWebflowType: matches web flow label variants only', () => {
+  assert.equal(isWebflowType('Webflow'), true);
+  assert.equal(isWebflowType('Web Flow'), true);
+  assert.equal(isWebflowType('Web'), true);
+  assert.equal(isWebflowType('Edge'), false);
+  assert.equal(isWebflowType('Backend'), false);
+  assert.equal(isWebflowType(undefined), false);
 });
 
-test('buildSetErd: only edges internal to the set', () => {
+test('relationshipEdges: collapses FK + object twin and merges reverse collection into one edge', () => {
+  const raw = [
+    { from: 'Workcenter', to: 'Area', label: 'areaId', many: false }, // scalar FK
+    { from: 'Workcenter', to: 'Area', label: 'area', many: false },   // object twin
+    { from: 'Area', to: 'Workcenter', label: 'workcenters', many: true }, // reverse collection
+  ];
+  const edges = relationshipEdges(raw);
+  assert.equal(edges.length, 1); // ONE relationship, not three links
+  const e = edges[0];
+  assert.equal(e.from, 'Workcenter'); // oriented from the FK owner
+  assert.equal(e.to, 'Area');
+  assert.equal(e.toMany, false);  // Area is the "one" end (bar)
+  assert.equal(e.fromMany, true); // Workcenter is the "many" end (crow's foot)
+});
+
+test('relationshipEdges: keeps distinct foreign keys as separate links', () => {
+  const raw = [
+    { from: 'Order', to: 'Address', label: 'shipFromAddressId', many: false },
+    { from: 'Order', to: 'Address', label: 'shipFromAddress', many: false },
+    { from: 'Order', to: 'Address', label: 'shipToAddressId', many: false },
+    { from: 'Order', to: 'Address', label: 'shipToAddress', many: false },
+  ];
+  const edges = relationshipEdges(raw);
+  assert.equal(edges.length, 2); // two genuinely distinct relationships
+  assert.deepEqual(edges.map(e => e.label).sort(), ['shipFromAddress', 'shipToAddress']);
+});
+
+test('buildModelGraph: focal carries fields; neighbors lazy; FK label canonicalized', () => {
+  const graph = { name: 'Area', fields: [{ name: 'code', type: 'String!' }], relations: [{ field: 'workcenters', target: 'Workcenter', many: true }] };
+  const refs = [{ from: 'WorkOrder', to: 'Area', label: 'areaId', many: false }];
+  const g = buildModelGraph(graph, refs, 'application');
+
+  const focal = g.nodes.find(n => n.name === 'Area');
+  assert.ok(focal && focal.focal === true && focal.fields?.[0].name === 'code');
+  const wcNode = g.nodes.find(n => n.name === 'Workcenter');
+  assert.ok(wcNode && wcNode.fields === undefined && wcNode.service === 'application');
+  assert.ok(g.nodes.some(n => n.name === 'WorkOrder'));
+  assert.ok(g.edges.some(e => e.from === 'Area' && e.to === 'Workcenter' && e.toMany === true));
+  // Inbound FK 'areaId' is canonicalized to 'area'.
+  assert.ok(g.edges.some(e => e.from === 'WorkOrder' && e.to === 'Area' && e.label === 'area' && e.toMany === false));
+});
+
+test('buildSetGraph: only relationships internal to the set', () => {
   const refs = [
     { from: 'A', to: 'B', label: 'b', many: true },
     { from: 'A', to: 'External', label: 'x', many: false },
   ];
-  const mer = buildSetErd(['A', 'B'], refs);
-  assert.match(mer, /A \|\|--o\{ B : b/);
-  assert.doesNotMatch(mer, /External/);
+  const g = buildSetGraph(['A', 'B'], refs);
+  assert.deepEqual(g.nodes.map(n => n.name).sort(), ['A', 'B']);
+  assert.equal(g.edges.length, 1);
+  assert.ok(g.edges[0].from === 'A' && g.edges[0].to === 'B' && g.edges[0].toMany === true);
+  assert.ok(!g.nodes.some(n => n.name === 'External'));
 });
 
 test('deriveEndpoints: from environment slug', () => {
@@ -150,17 +223,47 @@ test('deriveEndpoints: overrides win; mcpEndpoint fallback when no env', () => {
   assert.equal(ep.mcp, 'https://mcp.custom/sse');
 });
 
-test('toMermaid: erDiagram with cardinality + sanitized ids', () => {
-  const mer = toMermaid({
-    name: 'Area',
-    fields: [{ name: 'code', type: 'String!' }],
-    relations: [
-      { field: 'workcenters', target: 'Workcenter', many: true },
-      { field: 'site', target: 'Site', many: false },
-    ],
-  });
-  assert.match(mer, /^erDiagram/);
-  assert.match(mer, /Area \|\|--o\{ Workcenter : workcenters/);
-  assert.match(mer, /Area \}o--\|\| Site : site/);
-  assert.match(mer, /String code/); // ! stripped
+test('parseModelFieldRecords: system_list_model_fields JSON-wrapped TRON tuples', () => {
+  const out = [
+    'Found 4 field(s) across 1 model(s). Results in TRON format:',
+    '',
+    'class A: name,type,description',
+    '',
+    '[{"name":"User","fields":[' +
+      'A("id","ID!","The unique identifier of the User."),' +
+      'A("email","String!","The email address. Also the username."),' +
+      'A("homeTenant","Tenant","The home Tenant this User operates in."),' +
+      'A("tenants","[UserTenant!]","The Tenants this User has access to.")' +
+    ']}]',
+  ].join('\n');
+  const recs = parseModelFieldRecords(out);
+  assert.equal(recs.length, 4);
+  assert.deepEqual(recs[0], { name: 'id', type: 'ID!', description: 'The unique identifier of the User.' });
+  assert.equal(recs[2].name, 'homeTenant');
+  assert.equal(recs[3].type, '[UserTenant!]');
+});
+
+test('parseModelFieldRecords: descriptions with parens/markdown do not create phantom records', () => {
+  // Real app-model descriptions embed markdown like "**`code`** (`String!`)".
+  const out = [
+    'class A: name,type,description',
+    '[{"name":"ConversationStatus","fields":[' +
+      'A("code","String!","**`code`** (`String!`)\nShort unique identifier code."),' +
+      'A("conversations","[Conversation!]!","")' +
+    ']}]',
+  ].join('\n');
+  const recs = parseModelFieldRecords(out);
+  assert.equal(recs.length, 2);
+  assert.equal(recs[0].name, 'code');
+  assert.equal(recs[1].name, 'conversations');
+});
+
+test('baseType / isRelationType: scalars vs model references', () => {
+  assert.equal(baseType('[UserTenant!]'), 'UserTenant');
+  assert.equal(baseType('String!'), 'String');
+  assert.equal(isRelationType('String!'), false);
+  assert.equal(isRelationType('ID!'), false);
+  assert.equal(isRelationType('[JSONObject!]'), false); // JSON arrays aren't relations
+  assert.equal(isRelationType('Tenant'), true);
+  assert.equal(isRelationType('[UserTenant!]'), true);
 });

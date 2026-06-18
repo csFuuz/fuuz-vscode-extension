@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { TenantResources } from '../types';
 import { TenantConfigurationManager } from '../services/tenantConfigurationManager';
 import { TenantDataService } from '../services/tenantDataService';
+import { isWebflowType } from '../util/fuuzParse';
 
 /** A grouping folder carrying the items it should render and how. */
 interface Category {
@@ -50,6 +51,9 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
 
       const roots: ResourceItem[] = [];
       const mcp = resources.mcp;
+      if (mcp?.issues?.length) {
+        roots.push(node(`Couldn't load some resources (${mcp.issues.length})`, 'issuesRoot', mcp.issues));
+      }
       if (mcp?.application?.length) {
         roots.push(node('Application', 'appRoot', mcp.application));
       }
@@ -81,6 +85,10 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
       return Object.entries(element.node as Record<string, any>).map(
         ([k, v]) => new ResourceItem(`${k}: ${stringifyValue(v)}`, vscode.TreeItemCollapsibleState.None, 'envField', { k, v })
       );
+    }
+
+    if (element.contextValue === 'issuesRoot') {
+      return (element.node as string[]).map(msg => new ResourceItem(msg, vscode.TreeItemCollapsibleState.None, 'issue'));
     }
 
     if (element.contextValue === 'appRoot') {
@@ -119,8 +127,12 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
           folder('Data Models', m.dataModels, 'datamodel'),
         ];
       }
+      case 'flowGroup':
+        return (element.node.flows as any[]).map(flowLeaf);
       case 'category': {
         const cat = element.category!;
+        // Flows are grouped by type (Edge / Webflow / Backend) when types are known.
+        if (cat.childKind === 'flow') return flowCategoryChildren(cat.items);
         const isToolKind = cat.childKind === 'mcpTool' || cat.childKind === 'dataflowTool';
         const ent = this.configManager.getActiveEnterprise();
         const disabled = isToolKind && ent && tenant
@@ -138,7 +150,7 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
       case 'datamodel': {
         let fields = element.node.fields;
         if ((!fields || fields.length === 0) && tenant && element.node.name) {
-          fields = await this.dataService.getModelFields(tenant, element.node.name);
+          fields = await this.dataService.getModelFields(tenant, element.node.name, element.node.service);
           element.node.fields = fields; // cache on the node for this session
         }
         return (fields ?? []).map((f: any) =>
@@ -152,8 +164,37 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
 }
 
 const COLLAPSIBLE = new Set([
-  'moduleGroup', 'module', 'datamodel', 'category', 'envRoot', 'appRoot', 'sysModelsRoot', 'toolsRoot',
+  'moduleGroup', 'module', 'datamodel', 'category', 'flowGroup', 'envRoot', 'appRoot', 'sysModelsRoot', 'toolsRoot', 'issuesRoot',
 ]);
+
+/**
+ * A single flow leaf. Web flows get the `flowWebflow` context (no Execute action,
+ * since they can't run from VS Code); everything else is `flow` (executable).
+ */
+function flowLeaf(f: any): ResourceItem {
+  const webflow = isWebflowType(f.type);
+  const it = node(labelFor('flow', f), webflow ? 'flowWebflow' : 'flow', f);
+  it.description = webflow ? 'web · run in Fuuz' : f.type || undefined;
+  return it;
+}
+
+/** Render a module's flows: grouped by type when types are known, else flat. */
+function flowCategoryChildren(items: any[]): ResourceItem[] {
+  if (!items.some(f => f.type)) return items.map(flowLeaf);
+  const groups = new Map<string, any[]>();
+  for (const f of items) {
+    const key = f.type || 'Other';
+    const arr = groups.get(key);
+    if (arr) arr.push(f);
+    else groups.set(key, [f]);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([type, list]) => {
+      const it = new ResourceItem(`${type} (${list.length})`, vscode.TreeItemCollapsibleState.Collapsed, 'flowGroup', { type, flows: list });
+      return it;
+    });
+}
 
 /** Render a primitive/object env value compactly for a tree label. */
 function stringifyValue(v: any): string {
@@ -227,6 +268,8 @@ class ResourceItem extends vscode.TreeItem {
       module: 'symbol-module',
       screen: 'symbol-class',
       flow: 'symbol-method',
+      flowWebflow: 'globe',
+      flowGroup: 'list-tree',
       datamodel: 'symbol-struct',
       field: 'symbol-field',
       document: 'file',
@@ -235,6 +278,8 @@ class ResourceItem extends vscode.TreeItem {
       mcpTool: 'tools',
       envRoot: 'server-environment',
       envField: 'symbol-field',
+      issuesRoot: 'warning',
+      issue: 'warning',
       info: 'info',
       error: 'error',
     };

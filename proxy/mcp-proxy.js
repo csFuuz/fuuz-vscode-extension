@@ -15,7 +15,15 @@
 const readline = require('readline');
 
 const MCP_URL = process.env.FUUZ_MCP_URL;
-const TOKEN = process.env.FUUZ_TOKEN;
+// Token resolution, in order:
+//   1. FUUZ_TOKEN — the literal token (VS Code provider passes it directly).
+//   2. FUUZ_TOKEN_ENV — the NAME of an env var to read the token from at runtime.
+// The indirection lets MCP clients that don't expand `${VAR}` in their config
+// (notably Claude Desktop) keep the secret OUT of the config file: only the
+// variable name is written to disk, and the proxy dereferences it from the
+// environment it inherits when launched.
+const TOKEN = process.env.FUUZ_TOKEN
+  || (process.env.FUUZ_TOKEN_ENV ? process.env[process.env.FUUZ_TOKEN_ENV] : undefined);
 const DISABLED = new Set(
   String(process.env.FUUZ_DISABLED_TOOLS || '')
     .split(',')
@@ -92,7 +100,11 @@ async function handle(msg) {
 }
 
 if (!MCP_URL || !TOKEN) {
-  log('FUUZ_MCP_URL and FUUZ_TOKEN are required');
+  if (MCP_URL && process.env.FUUZ_TOKEN_ENV && !TOKEN) {
+    log(`token env var "${process.env.FUUZ_TOKEN_ENV}" is unset or empty — export it before launching this MCP client`);
+  } else {
+    log('FUUZ_MCP_URL and a token (FUUZ_TOKEN, or FUUZ_TOKEN_ENV naming an env var) are required');
+  }
   process.exit(1);
 }
 log(`proxying ${MCP_URL} (disabled: ${[...DISABLED].join(', ') || 'none'})`);

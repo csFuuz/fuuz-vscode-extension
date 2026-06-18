@@ -1,4 +1,5 @@
 import { EnterpriseEndpoints } from '../types';
+import { timeoutSignal } from '../util/abort';
 
 const REQUEST_TIMEOUT_MS = 30000;
 
@@ -16,9 +17,8 @@ export interface ApiResult {
  * SecretStorage.
  */
 export class FuuzApiClient {
-  private async post(url: string, token: string, body: unknown): Promise<ApiResult> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  private async post(url: string, token: string, body: unknown, signal?: AbortSignal): Promise<ApiResult> {
+    const t = timeoutSignal(REQUEST_TIMEOUT_MS, signal);
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -27,7 +27,7 @@ export class FuuzApiClient {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body ?? {}),
-        signal: controller.signal,
+        signal: t.signal,
       });
       const text = await res.text();
       let parsed: unknown = text;
@@ -38,7 +38,7 @@ export class FuuzApiClient {
       }
       return { ok: res.ok, status: res.status, body: parsed };
     } finally {
-      clearTimeout(timer);
+      t.dispose();
     }
   }
 
@@ -49,9 +49,10 @@ export class FuuzApiClient {
     endpoints: EnterpriseEndpoints,
     token: string,
     flowId: string,
-    payload: unknown
+    payload: unknown,
+    signal?: AbortSignal
   ): Promise<ApiResult> {
-    return this.post(endpoints.flowExecution, token, { flowId, payload: payload ?? {} });
+    return this.post(endpoints.flowExecution, token, { flowId, payload: payload ?? {} }, signal);
   }
 
   /**
@@ -62,10 +63,11 @@ export class FuuzApiClient {
     endpoints: EnterpriseEndpoints,
     token: string,
     topic: string,
-    body: unknown
+    body: unknown,
+    signal?: AbortSignal
   ): Promise<ApiResult> {
     const base = endpoints.webhook.replace(/\/$/, '');
     const url = `${base}/${topic.replace(/^\//, '')}`;
-    return this.post(url, token, body ?? {});
+    return this.post(url, token, body ?? {}, signal);
   }
 }
