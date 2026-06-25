@@ -11,6 +11,7 @@ const options = {
   entryPoints: {
     erd: 'src/webview/erd/index.tsx',
     config: 'src/webview/config/index.tsx',
+    report: 'src/webview/report/index.tsx',
   },
   bundle: true,
   format: 'iife',

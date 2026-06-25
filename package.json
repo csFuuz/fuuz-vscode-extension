@@ -2,7 +2,7 @@
   "name": "fuuz-vscode-extension",
   "displayName": "Fuuz for VS Code",
   "description": "VS Code extension for Fuuz application management with multi-tenant MCP support",
-  "version": "0.19.0",
+  "version": "0.28.0",
   "publisher": "cscott",
   "icon": "media/icon.png",
   "repository": {
@@ -95,6 +95,60 @@
         "icon": "$(rocket)"
       },
       {
+        "command": "fuuz.checkModelCompliance",
+        "title": "Check Schema Compliance",
+        "category": "Fuuz",
+        "icon": "$(verified)"
+      },
+      {
+        "command": "fuuz.scaffoldArtifact",
+        "title": "Scaffold Compliant Outline",
+        "category": "Fuuz",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "fuuz.checkOutlineCompliance",
+        "title": "Check Outline Compliance",
+        "category": "Fuuz",
+        "icon": "$(verified)"
+      },
+      {
+        "command": "fuuz.qaScreen",
+        "title": "QA this Screen",
+        "category": "Fuuz",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "fuuz.qaApp",
+        "title": "QA this App",
+        "category": "Fuuz",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "fuuz.runQaInBrowser",
+        "title": "Run QA in Browser",
+        "category": "Fuuz",
+        "icon": "$(play)"
+      },
+      {
+        "command": "fuuz.collectQaLogs",
+        "title": "Collect Fuuz Logs for Run",
+        "category": "Fuuz",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "fuuz.refreshQaRuns",
+        "title": "Refresh QA Runs",
+        "category": "Fuuz",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fuuz.deleteQaRun",
+        "title": "Delete QA Run",
+        "category": "Fuuz",
+        "icon": "$(trash)"
+      },
+      {
         "command": "fuuz.openInFuuz",
         "title": "Open in Fuuz",
         "category": "Fuuz",
@@ -165,6 +219,11 @@
         {
           "id": "fuuzResourceTree",
           "name": "Resources",
+          "when": "fuuz.tenantSelected"
+        },
+        {
+          "id": "fuuzQaRuns",
+          "name": "QA Runs",
           "when": "fuuz.tenantSelected"
         }
       ]
@@ -278,6 +337,13 @@
       }
     },
     "menus": {
+      "editor/title": [
+        {
+          "command": "fuuz.checkOutlineCompliance",
+          "when": "resourceFilename =~ /\\.(model|query|flow|screen)\\.jsonc$/ || resourceFilename =~ /\\.script\\.js$/",
+          "group": "navigation"
+        }
+      ],
       "view/title": [
         {
           "command": "fuuz.findResource",
@@ -297,6 +363,26 @@
         {
           "command": "fuuz.createTool",
           "when": "view == fuuzResourceTree",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.scaffoldArtifact",
+          "when": "view == fuuzResourceTree",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.qaApp",
+          "when": "view == fuuzResourceTree",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.refreshQaRuns",
+          "when": "view == fuuzQaRuns",
+          "group": "navigation"
+        },
+        {
+          "command": "fuuz.collectQaLogs",
+          "when": "view == fuuzQaRuns",
           "group": "navigation"
         },
         {
@@ -332,12 +418,37 @@
           "group": "inline"
         },
         {
+          "command": "fuuz.qaScreen",
+          "when": "view == fuuzResourceTree && viewItem == screen",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.runQaInBrowser",
+          "when": "view == fuuzQaRuns && viewItem == run",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.collectQaLogs",
+          "when": "view == fuuzQaRuns && viewItem == run",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.deleteQaRun",
+          "when": "view == fuuzQaRuns && viewItem == run",
+          "group": "inline"
+        },
+        {
           "command": "fuuz.showModuleErd",
           "when": "view == fuuzResourceTree && viewItem == module",
           "group": "inline"
         },
         {
           "command": "fuuz.queryModel",
+          "when": "view == fuuzResourceTree && viewItem == datamodel",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.checkModelCompliance",
           "when": "view == fuuzResourceTree && viewItem == datamodel",
           "group": "inline"
         },
@@ -361,7 +472,7 @@
     "watch:webview": "node scripts/build-webview.mjs --watch",
     "lint": "eslint src --ext ts --ignore-pattern \"**/*.test.ts\" --ignore-pattern \"src/webview/**\"",
     "test": "tsc -p tsconfig.test.json && node --test out/test/*.test.js",
-    "test:webview": "npm run build:webview && node scripts/smoke-config-webview.mjs"
+    "test:webview": "npm run build:webview && node scripts/smoke-config-webview.mjs && node scripts/smoke-report-webview.mjs"
   },
   "devDependencies": {
     "@dagrejs/dagre": "^3.0.0",

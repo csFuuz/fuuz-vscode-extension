@@ -29,7 +29,6 @@ export interface EnterpriseView {
   name: string;
   environment: string;
   mcpEndpoint: string;
-  overrides: { mcpServerUrl: string; flowExecutionUrl: string; webhookUrl: string };
   endpoints: { apiBase: string; mcp: string; flowExecution: string; webhook: string };
   tenants: TenantView[];
 }
@@ -63,9 +62,7 @@ export interface ImportResultView {
 export type ConfigInbound =
   | { type: 'ready' }
   | { type: 'addByToken'; token: string }
-  | { type: 'saveEnterprise'; id?: string; name: string; environment?: string; mcpEndpoint?: string; mcpServerUrl?: string; flowExecutionUrl?: string; webhookUrl?: string }
   | { type: 'removeEnterprise'; id: string }
-  | { type: 'saveTenant'; enterpriseId: string; tenantId?: string; name: string; token?: string }
   | { type: 'removeTenant'; enterpriseId: string; tenantId: string }
   | { type: 'setActive'; enterpriseId: string; tenantId: string }
   | { type: 'setDisabled'; enterpriseId: string; tenantId: string; disabled: boolean }

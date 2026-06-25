@@ -109,20 +109,6 @@ function TenantRow({ enterprise, tenant, status }: { enterprise: EnterpriseView;
 
 function EnterpriseCard({ enterprise, probeStatus }: { enterprise: EnterpriseView; probeStatus: ProbeStatus }) {
   const ep = enterprise.endpoints;
-  const [tName, setTName] = useState('');
-  const [tToken, setTToken] = useState('');
-  const [env, setEnv] = useState(enterprise.environment);
-  const [mcp, setMcp] = useState(enterprise.overrides.mcpServerUrl);
-  const [flow, setFlow] = useState(enterprise.overrides.flowExecutionUrl);
-  const [hook, setHook] = useState(enterprise.overrides.webhookUrl);
-
-  const addTenant = () => {
-    if (!tName.trim()) return;
-    post({ type: 'saveTenant', enterpriseId: enterprise.id, name: tName.trim(), token: tToken || undefined });
-    setTName('');
-    setTToken('');
-  };
-
   return (
     <div className="card">
       <div className="ent-head">
@@ -148,46 +134,6 @@ function EnterpriseCard({ enterprise, probeStatus }: { enterprise: EnterpriseVie
               <TenantRow key={t.id} enterprise={enterprise} tenant={t} status={probeStatus[t.id]} />
             ))}
       </div>
-
-      <details>
-        <summary>+ Add tenant</summary>
-        <div className="grid2">
-          <div>
-            <label>Tenant name</label>
-            <input value={tName} placeholder="Production" onChange={e => setTName(e.target.value)} />
-          </div>
-          <div>
-            <label>Access token</label>
-            <input type="password" value={tToken} placeholder="fuuz_pat_…" onChange={e => setTToken(e.target.value)} />
-          </div>
-        </div>
-        <div className="form-actions"><button onClick={addTenant}>Save tenant</button></div>
-      </details>
-
-      <details>
-        <summary>Edit environment &amp; endpoints</summary>
-        <label>Environment slug — the {'{env}.{account}'} part of api.&lt;slug&gt;.fuuz.app</label>
-        <input value={env} placeholder="build.mfgx" onChange={e => setEnv(e.target.value)} />
-        <label>MCP server URL (override)</label>
-        <input value={mcp} placeholder={ep.mcp} onChange={e => setMcp(e.target.value)} />
-        <label>Flow execution URL (override)</label>
-        <input value={flow} placeholder={ep.flowExecution} onChange={e => setFlow(e.target.value)} />
-        <label>Webhook base URL (override)</label>
-        <input value={hook} placeholder={ep.webhook} onChange={e => setHook(e.target.value)} />
-        <div className="form-actions">
-          <button
-            onClick={() => post({
-              type: 'saveEnterprise',
-              id: enterprise.id,
-              name: enterprise.name,
-              environment: env.trim(),
-              mcpServerUrl: mcp.trim(),
-              flowExecutionUrl: flow.trim(),
-              webhookUrl: hook.trim(),
-            })}
-          >Save</button>
-        </div>
-      </details>
     </div>
   );
 }
@@ -225,30 +171,6 @@ function AgentToolsCard({ at }: { at: NonNullable<PanelState['activeTools']> }) 
   );
 }
 
-function AddEnterpriseCard() {
-  const [name, setName] = useState('');
-  const [env, setEnv] = useState('');
-  const add = () => {
-    if (!name.trim() || !env.trim()) return;
-    post({ type: 'saveEnterprise', name: name.trim(), environment: env.trim() });
-    setName('');
-    setEnv('');
-  };
-  return (
-    <div className="card">
-      <h2>Add enterprise</h2>
-      <div className="grid2">
-        <div><label>Name</label><input value={name} placeholder="ACME Corporation" onChange={e => setName(e.target.value)} /></div>
-        <div><label>Environment slug</label><input value={env} placeholder="build.mfgx" onChange={e => setEnv(e.target.value)} /></div>
-      </div>
-      <div className="muted">
-        All endpoints derive from <code>https://api.&lt;slug&gt;.fuuz.app</code> — flow execution, webhook, graphql and mcp.
-      </div>
-      <div className="form-actions"><button onClick={add}>Add enterprise</button></div>
-    </div>
-  );
-}
-
 function App() {
   const [state, setState] = useState<PanelState>({ enterprises: [] });
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>({});
@@ -282,7 +204,7 @@ function App() {
         {logo && <img src={logo} alt="Fuuz" />}
         <div>
           <h1>Connections</h1>
-          <div className="sub">Configure enterprises &amp; tenants. Tokens are stored securely and registered as MCP servers for your AI copilot.</div>
+          <div className="sub">Add a connection by API key. Tokens are stored securely and registered as MCP servers for your AI copilot.</div>
         </div>
       </header>
       <AddByKeyCard result={importResult} />
@@ -290,7 +212,6 @@ function App() {
         <EnterpriseCard key={e.id} enterprise={e} probeStatus={probeStatus} />
       ))}
       {state.activeTools && <AgentToolsCard at={state.activeTools} />}
-      <AddEnterpriseCard />
     </>
   );
 }

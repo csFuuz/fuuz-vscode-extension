@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
-import { Enterprise } from '../types';
 import { TenantConfigurationManager } from '../services/tenantConfigurationManager';
 import { TokenStore } from '../services/tokenStore';
 import { FuuzMcpClient } from '../services/fuuzMcpClient';
@@ -19,10 +18,6 @@ export interface ConfigPanelDeps {
   health: ConnectionHealth;
   /** Called after any mutation so the host can re-register MCP servers etc. */
   onChanged: () => void;
-}
-
-function slug(name: string): string {
-  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
 }
 
 /**
@@ -106,42 +101,9 @@ export class ConfigPanel {
           return;
         }
 
-        case 'saveEnterprise': {
-          const id: string = msg.id || `ent-${slug(msg.name)}-${Date.now().toString(36)}`;
-          const existing = configManager.getEnterprise(id);
-          const environment: string | undefined = msg.environment?.trim() || undefined;
-          // Keep mcpEndpoint meaningful for the resource tree: derive from the
-          // environment slug when one is given and none was set explicitly.
-          const mcpEndpoint =
-            msg.mcpEndpoint?.trim() ||
-            (environment ? `https://api.${environment}.fuuz.app` : existing?.mcpEndpoint || '');
-          const enterprise: Enterprise = {
-            id,
-            name: msg.name,
-            environment,
-            mcpEndpoint,
-            mcpServerUrl: msg.mcpServerUrl?.trim() || undefined,
-            flowExecutionUrl: msg.flowExecutionUrl?.trim() || undefined,
-            webhookUrl: msg.webhookUrl?.trim() || undefined,
-            tenants: existing?.tenants ?? [],
-          };
-          await configManager.addOrUpdateEnterprise(enterprise);
-          break;
-        }
-
         case 'removeEnterprise':
           await configManager.removeEnterprise(msg.id);
           break;
-
-        case 'saveTenant': {
-          const tenantId: string = msg.tenantId || `tnt-${slug(msg.name)}-${Date.now().toString(36)}`;
-          await configManager.addOrUpdateTenant(
-            msg.enterpriseId,
-            { id: tenantId, name: msg.name },
-            msg.token || undefined
-          );
-          break;
-        }
 
         case 'removeTenant':
           await configManager.removeTenant(msg.enterpriseId, msg.tenantId);
@@ -235,11 +197,6 @@ export class ConfigPanel {
         name: e.name,
         environment: e.environment ?? '',
         mcpEndpoint: e.mcpEndpoint,
-        overrides: {
-          mcpServerUrl: e.mcpServerUrl ?? '',
-          flowExecutionUrl: e.flowExecutionUrl ?? '',
-          webhookUrl: e.webhookUrl ?? '',
-        },
         endpoints: configManager.endpointsFor(e),
         tenants: await Promise.all(
           e.tenants.map(async t => ({

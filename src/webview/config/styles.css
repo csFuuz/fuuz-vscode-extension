@@ -63,7 +63,6 @@ button.danger { background: transparent; color: var(--vscode-errorForeground); }
 .tenant .name { font-weight: 600; }
 .badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
 .active { background: var(--vscode-testing-iconPassed, #2ea043); color: #fff; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .spacer { flex: 1; }
 .status { font-size: 11px; margin-left: 6px; }
 .ok { color: var(--vscode-testing-iconPassed, #2ea043); }

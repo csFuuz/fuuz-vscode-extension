@@ -1,0 +1,46 @@
+body {
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-foreground);
+  padding: 0 24px 48px;
+  font-size: 13px;
+}
+header { display: flex; align-items: center; gap: 18px; padding: 20px 0 16px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 18px; }
+h1 { font-size: 16px; margin: 0; }
+h2 { font-size: 13px; margin: 18px 0 8px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--vscode-descriptionForeground); }
+.sub { color: var(--vscode-descriptionForeground); font-size: 12px; margin-top: 2px; }
+.muted { color: var(--vscode-descriptionForeground); }
+
+/* Score gauge */
+.gauge { position: relative; width: 84px; height: 84px; flex: none; }
+.gauge svg { transform: rotate(-90deg); }
+.gauge .num { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; }
+.track { stroke: var(--vscode-panel-border); }
+.arc-good { stroke: var(--vscode-testing-iconPassed, #2ea043); }
+.arc-ok { stroke: var(--vscode-charts-yellow, #d7a700); }
+.arc-bad { stroke: var(--vscode-errorForeground, #f14c4c); }
+
+.counts { display: flex; gap: 14px; margin: 4px 0 0; }
+.count { font-size: 12px; }
+.count b { font-size: 15px; }
+
+/* Findings */
+.finding { display: flex; gap: 8px; padding: 9px 0; border-top: 1px solid var(--vscode-panel-border); }
+.finding .sev { flex: none; }
+.finding .body { flex: 1; }
+.finding .msg { font-weight: 600; }
+.finding .where { font-family: var(--vscode-editor-font-family, monospace); background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.12)); border-radius: 3px; padding: 0 4px; font-weight: 400; margin-left: 4px; }
+.finding .fix { color: var(--vscode-descriptionForeground); font-size: 12px; margin-top: 2px; }
+.sev-error { color: var(--vscode-errorForeground, #f14c4c); }
+.sev-warn { color: var(--vscode-charts-yellow, #d7a700); }
+.sev-info { color: var(--vscode-charts-blue, #3794ff); }
+
+.empty { color: var(--vscode-testing-iconPassed, #2ea043); padding: 16px 0; }
+
+table.rules { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.rules th, table.rules td { text-align: left; padding: 5px 8px 5px 0; border-bottom: 1px solid var(--vscode-panel-border); }
+table.rules td.num, table.rules th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.rule-fail td:first-child::after { content: " ⚠"; color: var(--vscode-charts-yellow, #d7a700); }
+
+button { padding: 5px 12px; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+button:hover { background: var(--vscode-button-hoverBackground); }
+.footer { margin-top: 24px; color: var(--vscode-descriptionForeground); font-size: 11px; }

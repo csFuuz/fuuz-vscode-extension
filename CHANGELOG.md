@@ -2,6 +2,104 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## 0.28.0
+
+- **Simpler Connections panel**: connections are managed entirely by **API key**.
+  Removed the "Add enterprise", "Add tenant", and "Edit environment & endpoints"
+  controls — paste a key at the top and the enterprise/tenant/environment are
+  detected automatically. Environment and endpoints are shown read-only (they
+  shouldn't change). Pruned the now-unused message handlers and state.
+
+## 0.27.0
+
+- **QA Runs scoped to the active tenant**: runs are now stored under
+  `.fuuz/qa/<tenant>/<run>/` and the **QA Runs** view shows only the active
+  tenant's runs, refreshing when you switch tenants.
+- **Delete a QA run**: a trash action on each run removes it and all its files
+  (brief, plan, logs, artifacts) after confirmation (sent to the OS trash).
+
+## 0.26.0
+
+- **QA launches from the workspace root**: the Claude Code QA session now runs
+  from your (already-trusted) workspace folder instead of the per-run directory,
+  so Claude no longer prompts to "trust this folder" on every run. The brief,
+  MCP config, and artifacts are referenced at `.fuuz/qa/<run>/`.
+
+## 0.25.0
+
+- **Fix QA launch command**: the `claude --mcp-config` flag is variadic, so the
+  positional prompt was being swallowed as a config path ("MCP config file not
+  found"). The prompt now precedes the flag, and `--strict-mcp-config` limits the
+  QA session to exactly the Playwright + tenant Fuuz servers.
+- Removed the deprecated `baseUrl`/unused `paths` from tsconfig.
+
+## 0.24.0
+
+- **QA runs use Claude Code, not Copilot**: **QA this Screen / QA this App** now
+  generate the brief and launch a supervised **Claude Code** session directly (the
+  headed-browser Playwright run) instead of handing off to VS Code Copilot chat.
+- **Tenant-aware QA sessions**: the run targets the **active tenant's** environment
+  (e.g. `https://build.mfgx.fuuz.app`) and the Claude Code session is wired with
+  that tenant's **Fuuz MCP server**, so Claude can cross-reference schema, data, and
+  logs while testing. The token is passed via the terminal environment
+  (`${FUUZ_QA_TOKEN}`) and is never written to disk.
+
+## 0.23.0
+
+QA harness — run it in the browser.
+
+- **Run QA in Browser**: from a QA run, launches a supervised Claude Code session
+  wired to the **Playwright MCP** (headed browser, persistent profile) that
+  executes the run's brief against the target app. The browser is headed so you
+  log each persona in manually; Claude drives everything else and saves
+  screenshots/GIFs + a report to the run's `artifacts/`. The Playwright MCP config
+  is written to the run dir; the session runs in an integrated terminal so logins
+  and progress stay visible.
+
+## 0.22.0
+
+QA harness — log correlation & runs view.
+
+- **QA Runs view**: a new view in the Fuuz sidebar lists each run under
+  `.fuuz/qa/<run>/` and its artifacts (brief, plan, collected logs); click to open.
+- **Collect Fuuz Logs for Run**: pulls Fuuz-side logs over MCP (the developer's
+  connection — the persona under test may lack log access) for the run's time
+  window and writes `logs.json`. Sources: `ApplicationSpanEventLog` (activity/
+  trace), `DataFlowDeploymentLog` (data-flow logs), `IntegrationRequestLog`
+  (integration errors). Each source degrades independently; errors sort first.
+
+## 0.21.0
+
+Testing & QA tooling — first cut.
+
+- **Schema Doctor (local compliance)**: check a data model, or a local artifact
+  outline, against the platform's conventions and get an explainable 0–100 score
+  with fix recommendations — **before** pushing to Fuuz.
+  - **Check Schema Compliance** (data-model node) audits a deployed model over MCP.
+  - **Scaffold Compliant Outline** writes a convention-correct starting skeleton
+    for a data model, screen, flow, script, or query.
+  - **Check Outline Compliance** (editor action on `*.model/query/flow/screen.jsonc`
+    and `*.script.js`) scores a local outline you scaffolded or hand-authored.
+  - Results open in a new **compliance report** webview (score gauge, findings
+    with fixes, per-rule breakdown, re-check).
+- **QA harness (preview)**: **QA this Screen** / **QA this App** generate a
+  driver-agnostic **test brief** for an AI agent to drive the running app —
+  per-persona manual login, click/fill/CRUD coverage, screenshots + GIFs, browser
+  console + Fuuz log capture, and UI/UX grooming. Destructive steps are gated to
+  test environments. The brief + plan are written to `.fuuz/qa/<run>/` and handed
+  to the agent chat. (Headless Playwright driver + MCP-side log correlation land
+  next.)
+
+## 0.20.0
+
+- **Design system, by default**: **Generate App Context File** now also writes
+  `.fuuz/DESIGN_SYSTEM.md` — the canonical Fuuz UI design system (DM Sans,
+  neutral-charcoal/white surfaces, violet `#5B30DF` accent, the shared status
+  palette) plus a paste-ready theme helper that reads live tokens from
+  `$appConfig.designSystem`. `AVAILABLE.md` points at it, so any widget an AI
+  copilot builds through the MCP is themed like core Fuuz unless you ask for
+  something unique.
+
 ## 0.19.0
 
 - **Query a model from the ERD**: each entity in the ERD now has a **⌕** button

@@ -21,6 +21,17 @@ import { buildModelGraph, buildSetGraph } from './util/fuuzParse';
 import type { ErdService } from './util/erdTypes';
 import { fuuzLog } from './services/logger';
 import { isAbortError } from './util/abort';
+import { runCompliance } from './qa/complianceChecker';
+import { scaffoldFor } from './qa/scaffolds';
+import { parseOutline, kindFromFileName, OutlineParseError } from './qa/outline';
+import { ReportPanel } from './qa/reportPanel';
+import { buildQaPlan, planToBrief } from './qa/planGenerator';
+import { deriveTarget } from './qa/qaTarget';
+import type { Persona, RunScope } from './qa/runTypes';
+import { collectFuuzLogs, type LogQueryFn, type CollectedLog } from './qa/logCollector';
+import { QaRunsProvider, QaItem, activeTenantQaDir } from './qa/qaRunsProvider';
+import { buildHeadedDriver } from './qa/driver';
+import type { ArtifactKind, ComplianceReport, DataModelDescriptor } from './qa/complianceTypes';
 
 export async function activate(context: vscode.ExtensionContext) {
   try {
@@ -57,6 +68,22 @@ export async function activate(context: vscode.ExtensionContext) {
     const resourceView = vscode.window.createTreeView('fuuzResourceTree', { treeDataProvider: resourceTreeProvider });
     context.subscriptions.push(resourceView);
 
+    // QA runs view + its commands (list runs, refresh, collect Fuuz logs for a run).
+    const qaRunsProvider = new QaRunsProvider(configManager);
+    context.subscriptions.push(
+      vscode.window.createTreeView('fuuzQaRuns', { treeDataProvider: qaRunsProvider }),
+      vscode.commands.registerCommand('fuuz.refreshQaRuns', () => qaRunsProvider.refresh()),
+      vscode.commands.registerCommand('fuuz.collectQaLogs', (arg?: unknown) =>
+        collectQaLogs(configManager, resourceService, qaRunsProvider, arg)
+      ),
+      vscode.commands.registerCommand('fuuz.runQaInBrowser', (arg?: unknown) =>
+        runQaInBrowser(configManager, tokenStore, arg)
+      ),
+      vscode.commands.registerCommand('fuuz.deleteQaRun', (arg?: unknown) =>
+        deleteQaRun(configManager, qaRunsProvider, arg)
+      )
+    );
+
     const updateResourceMessage = () => {
       const t = configManager.getActiveTenant();
       const snap = t ? configManager.getCachedResources(t.id) : null;
@@ -69,6 +96,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const onChanged = () => {
       tenantSelectorProvider.refresh();
       resourceTreeProvider.refresh();
+      qaRunsProvider.refresh();
       statusBar.update();
       mcpServerProvider.refresh();
       claudeMcpWriter.scheduleAutoSync();
@@ -449,6 +477,121 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     );
   });
 
+  // Schema Doctor: score an existing data model against learned platform
+  // conventions, locally, before any push to Fuuz.
+  register('fuuz.checkModelCompliance', async (arg?: unknown) => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const node = nodeArg(arg);
+    let modelName: string | undefined = node?.name || (typeof arg === 'string' ? arg : undefined);
+    if (!modelName) {
+      modelName = await vscode.window.showInputBox({
+        title: 'Check Schema Compliance', prompt: 'Data model name (e.g. WorkOrder)', ignoreFocusOut: true,
+        validateInput: v => (v.trim() ? undefined : 'A model name is required'),
+      });
+    }
+    if (!modelName) return;
+    const service: ErdService = node?.service ?? 'application';
+
+    const model = modelName.trim();
+    // Build a fresh report by sampling the model over MCP, then scoring locally.
+    const buildReport = async (signal?: AbortSignal): Promise<ComplianceReport | undefined> => {
+      const graph = await resourceService.getModelGraph(tenant, model, service, signal);
+      if (!graph) return undefined;
+      const descriptor: DataModelDescriptor = {
+        kind: 'dataModel',
+        name: graph.name,
+        fields: graph.fields.map(f => ({ name: f.name, type: f.type })),
+        relations: graph.relations.map(r => ({ field: r.field, target: r.target, many: r.many })),
+      };
+      return runCompliance(descriptor);
+    };
+
+    await withCancellable(`Fuuz: checking ${model}…`, async signal => {
+      const report = await buildReport(signal);
+      if (!report) { vscode.window.showWarningMessage(`Fuuz: couldn't load model "${model}".`); return; }
+      ReportPanel.show(context, report, () => buildReport());
+      const msg = `Fuuz: ${report.name} — ${report.score}% compliant (${report.passed}/${report.checks} checks).`;
+      if (report.score >= 90) vscode.window.showInformationMessage(msg);
+      else vscode.window.showWarningMessage(msg);
+    });
+  });
+
+  // Schema Doctor: score a local outline file (scaffolded or hand-authored)
+  // against the platform conventions BEFORE it is pushed to Fuuz.
+  register('fuuz.checkOutlineCompliance', async (arg?: unknown) => {
+    const uri = arg instanceof vscode.Uri ? arg : vscode.window.activeTextEditor?.document.uri;
+    if (!uri) { vscode.window.showWarningMessage('Open a Fuuz outline file to check (e.g. *.model.jsonc).'); return; }
+    const fileName = uri.path.split('/').pop() ?? '';
+    const kind = kindFromFileName(fileName);
+    if (!kind) {
+      vscode.window.showWarningMessage('Not a recognized Fuuz outline. Expected *.model.jsonc, *.query.jsonc, *.flow.jsonc, *.screen.jsonc, or *.script.js.');
+      return;
+    }
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      const text = Buffer.from(bytes).toString('utf8');
+      const descriptor = parseOutline(kind, text, fileName.replace(/\.[^.]+\.\w+$/, ''));
+      const report = runCompliance(descriptor);
+      ReportPanel.show(context, report);
+      const msg = `Fuuz: ${report.name} — ${report.score}% compliant (${report.passed}/${report.checks} checks).`;
+      if (report.score >= 90) vscode.window.showInformationMessage(msg);
+      else vscode.window.showWarningMessage(msg);
+    } catch (err) {
+      if (err instanceof OutlineParseError) vscode.window.showErrorMessage(`Fuuz: ${err.message}`);
+      else vscode.window.showErrorMessage(`Fuuz: couldn't check outline — ${errMsg(err)}`);
+    }
+  });
+
+  // QA harness: generate a test brief for a screen/app and hand it to the agent.
+  register('fuuz.qaScreen', async (arg?: unknown) => {
+    const node = nodeArg(arg);
+    const name = node?.name || (await vscode.window.showInputBox({ title: 'QA a Screen', prompt: 'Screen name', ignoreFocusOut: true }));
+    if (!name) return;
+    await startQaRun(configManager, tokenStore, { kind: 'screen', name });
+  });
+
+  register('fuuz.qaApp', async () => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const snap = configManager.getCachedResources(tenant.id);
+    const screens: string[] = [];
+    for (const mg of snap?.mcp?.application ?? []) {
+      for (const m of mg.modules ?? []) {
+        for (const s of m.screens ?? []) if (s.name) screens.push(s.name);
+      }
+    }
+    await startQaRun(configManager, tokenStore, { kind: 'app', name: tenant.name, screens });
+  });
+
+  // Schema Doctor: write a convention-compliant outline for a new artifact.
+  register('fuuz.scaffoldArtifact', async () => {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) { vscode.window.showWarningMessage('Open a folder to scaffold into.'); return; }
+    const kinds: Array<vscode.QuickPickItem & { artifactKind: ArtifactKind }> = [
+      { label: 'Data Model', artifactKind: 'dataModel' },
+      { label: 'Screen', artifactKind: 'screen' },
+      { label: 'Flow', artifactKind: 'flow' },
+      { label: 'Script', artifactKind: 'script' },
+      { label: 'Query', artifactKind: 'query' },
+    ];
+    const pick = await vscode.window.showQuickPick(kinds, { title: 'Scaffold a compliant Fuuz artifact', placeHolder: 'Artifact kind' });
+    if (!pick) return;
+    const name = await vscode.window.showInputBox({
+      title: `Scaffold ${pick.label}`, prompt: 'Name (PascalCase for models, e.g. WorkOrder)', ignoreFocusOut: true,
+      validateInput: v => (v.trim() ? undefined : 'A name is required'),
+    });
+    if (!name) return;
+    const scaffold = scaffoldFor(pick.artifactKind, name.trim());
+    const dir = vscode.Uri.joinPath(folder.uri, '.fuuz', 'scaffolds');
+    await vscode.workspace.fs.createDirectory(dir);
+    const file = vscode.Uri.joinPath(dir, scaffold.fileName);
+    await vscode.workspace.fs.writeFile(file, Buffer.from(scaffold.content, 'utf8'));
+    const doc = await vscode.workspace.openTextDocument(file);
+    await vscode.window.showTextDocument(doc);
+    vscode.window.showInformationMessage(`Fuuz: scaffolded ${pick.label} → ${scaffold.fileName}. Fill it in, then check compliance before pushing.`);
+  });
+
   register('fuuz.deployComponent', async () => {
     if (!vscode.workspace.getConfiguration('fuuz').get<boolean>('enableDeploy', false)) {
       const pick = await vscode.window.showWarningMessage(
@@ -577,6 +720,240 @@ async function pickVersionId(
     validateInput: v => (v.trim() ? undefined : 'A version id is required'),
   });
   return manual?.trim() || undefined;
+}
+
+/**
+ * Build a QA brief for a scope, write the plan + brief under `.fuuz/qa/<run>/`,
+ * and hand the brief to the agent chat (the Claude-for-Chrome path). Personas
+ * are dev-supplied and logged in manually; destructive steps are hard-gated on a
+ * test environment. (Headless Playwright driver + MCP log collection: next slice.)
+ */
+async function startQaRun(
+  configManager: TenantConfigurationManager,
+  tokenStore: TokenStore,
+  scope: RunScope
+): Promise<void> {
+  const enterprise = configManager.getActiveEnterprise();
+  if (!enterprise) {
+    const pick = await vscode.window.showWarningMessage('Select an active Fuuz tenant first.', 'Select Tenant');
+    if (pick) await vscode.commands.executeCommand('fuuz.selectTenant');
+    return;
+  }
+  const target = deriveTarget(enterprise.environment ?? '');
+
+  const personaRaw = await vscode.window.showInputBox({
+    title: `QA ${scope.name} — personas`,
+    prompt: 'Comma-separated personas you will log in as (e.g. Operator, Supervisor)',
+    placeHolder: 'Operator, Supervisor',
+    ignoreFocusOut: true,
+    validateInput: v => (v.trim() ? undefined : 'Enter at least one persona'),
+  });
+  if (!personaRaw) return;
+  const personas: Persona[] = personaRaw.split(',').map(s => s.trim()).filter(Boolean).map(name => ({ name }));
+
+  // Destructive steps are only ever offered on a test-looking environment.
+  let destructiveAllowed = false;
+  if (target.isTestEnv) {
+    const d = await vscode.window.showQuickPick(['No — navigate & read only', 'Yes — allow create/update/delete'], {
+      title: `Enable destructive steps on ${target.envSlug}?`, ignoreFocusOut: true,
+    });
+    if (d === undefined) return;
+    destructiveAllowed = d.startsWith('Yes');
+  } else {
+    await vscode.window.showWarningMessage(
+      `Fuuz: "${target.envSlug || 'this environment'}" doesn't look like a test environment — destructive steps are disabled for safety.`
+    );
+  }
+
+  const runId = `qa-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
+  const plan = buildQaPlan({ runId, createdAt: new Date().toISOString(), scope, target, personas, destructiveAllowed });
+  const brief = planToBrief(plan);
+
+  // The Claude Code run needs a run directory on disk (config + artifacts),
+  // scoped to the active tenant so the QA Runs view can filter by tenant.
+  const tenantDir = activeTenantQaDir(configManager);
+  if (!tenantDir) {
+    const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: brief });
+    await vscode.window.showTextDocument(doc, { preview: false });
+    vscode.window.showWarningMessage('Fuuz: open a folder and select an active tenant to run QA with Claude Code.');
+    return;
+  }
+  const dir = vscode.Uri.joinPath(tenantDir, runId);
+  await vscode.workspace.fs.createDirectory(dir);
+  await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, 'plan.json'), Buffer.from(JSON.stringify(plan, null, 2), 'utf8'));
+  const briefUri = vscode.Uri.joinPath(dir, 'brief.md');
+  await vscode.workspace.fs.writeFile(briefUri, Buffer.from(brief, 'utf8'));
+  await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(briefUri), { preview: false });
+  await vscode.commands.executeCommand('fuuz.refreshQaRuns');
+
+  // Launch the run in Claude Code (headed browser) — not VS Code Copilot.
+  await launchClaudeQa(configManager, tokenStore, dir, plan.target.url);
+}
+
+/**
+ * Write the Playwright (+ tenant Fuuz) MCP config for a run and launch a
+ * supervised `claude` session in a terminal. The Fuuz token is passed via the
+ * terminal env (referenced as `${FUUZ_QA_TOKEN}` in the config) so it is never
+ * written to disk.
+ */
+async function launchClaudeQa(
+  configManager: TenantConfigurationManager,
+  tokenStore: TokenStore,
+  runDir: vscode.Uri,
+  targetUrl: string
+): Promise<void> {
+  const enterprise = configManager.getActiveEnterprise();
+  const tenant = configManager.getActiveTenant();
+  let fuuz: { url: string; tenantId: string; tokenEnvVar: string } | undefined;
+  let token: string | undefined;
+  if (enterprise && tenant) {
+    token = await tokenStore.getToken(enterprise.id, tenant.id);
+    if (token) fuuz = { url: configManager.getMcpServerUrl(enterprise), tenantId: tenant.id, tokenEnvVar: 'FUUZ_QA_TOKEN' };
+  }
+
+  // Launch from the (already-trusted) workspace root so Claude doesn't prompt to
+  // trust each new per-run directory; point everything at the run subfolder.
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  const runRel = workspace ? vscode.workspace.asRelativePath(runDir, false) : runDir.fsPath;
+  const launch = buildHeadedDriver({
+    runDirFsPath: runDir.fsPath,
+    briefPath: `${runRel}/brief.md`,
+    mcpConfigPath: `${runRel}/mcp.qa.json`,
+    artifactsPath: `${runRel}/artifacts`,
+    targetUrl,
+    fuuz,
+  });
+  await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(runDir, 'mcp.qa.json'), Buffer.from(JSON.stringify(launch.mcpConfig, null, 2), 'utf8'));
+
+  const env: Record<string, string> = {};
+  if (token) env.FUUZ_QA_TOKEN = token;
+  const term = vscode.window.createTerminal({
+    name: `Fuuz QA — ${runDir.path.split('/').pop()}`,
+    cwd: workspace ? workspace.uri : runDir,
+    env,
+  });
+  term.show();
+  term.sendText(launch.shellCommand, true);
+  vscode.window.showInformationMessage(
+    `Fuuz: launching Claude Code with a headed browser against ${targetUrl}. Log in each persona when prompted; artifacts → ${runRel}/artifacts.`
+  );
+}
+
+/**
+ * Collect Fuuz-side logs over MCP (developer connection) for a run's window and
+ * write them to `<run>/logs.json`. Correlation is by time: the plan's createdAt
+ * to now. Each log source degrades independently.
+ */
+async function collectQaLogs(
+  configManager: TenantConfigurationManager,
+  resourceService: TenantDataService,
+  provider: QaRunsProvider,
+  arg?: unknown
+): Promise<void> {
+  const tenant = configManager.getActiveTenant();
+  if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+  const qaDir = activeTenantQaDir(configManager);
+  if (!qaDir) { vscode.window.showWarningMessage('Open a folder and select an active tenant.'); return; }
+
+  let runDir: vscode.Uri | undefined = arg instanceof QaItem ? arg.resourceUri : undefined;
+  if (!runDir) {
+    const dirs = (await vscode.workspace.fs.readDirectory(qaDir).then(e => e, () => []))
+      .filter(([, t]) => t === vscode.FileType.Directory).map(([n]) => n).sort().reverse();
+    if (dirs.length === 0) { vscode.window.showWarningMessage('No QA runs found. Run "QA this Screen/App" first.'); return; }
+    const pick = await vscode.window.showQuickPick(dirs, { title: 'Collect logs for which run?' });
+    if (!pick) return;
+    runDir = vscode.Uri.joinPath(qaDir, pick);
+  }
+
+  // Window start = the plan's createdAt (fallback: 1 hour ago); end = now.
+  let startIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  try {
+    const planBuf = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(runDir, 'plan.json'));
+    const created = JSON.parse(Buffer.from(planBuf).toString('utf8'))?.createdAt;
+    if (typeof created === 'string') startIso = created;
+  } catch { /* no plan.json — use the fallback window */ }
+  const endIso = new Date().toISOString();
+
+  const query: LogQueryFn = (model, fields, where) =>
+    resourceService.queryModel(tenant, model, fields, where, 'application').then(r => r?.records ?? []);
+
+  await withCancellable('Fuuz: collecting run logs…', async () => {
+    const logs: CollectedLog[] = await collectFuuzLogs(query, { startIso, endIso }, (m, e) =>
+      fuuzLog(`QA log source ${m} skipped: ${errMsg(e)}`)
+    );
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(runDir!, 'logs.json'), Buffer.from(JSON.stringify(logs, null, 2), 'utf8'));
+    provider.refresh();
+    const errs = logs.filter(l => l.severity === 'error').length;
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(runDir!, 'logs.json'));
+    await vscode.window.showTextDocument(doc, { preview: true });
+    const msg = `Fuuz: collected ${logs.length} log entr${logs.length === 1 ? 'y' : 'ies'} (${errs} error${errs === 1 ? '' : 's'}) for the run window.`;
+    if (errs > 0) vscode.window.showWarningMessage(msg);
+    else vscode.window.showInformationMessage(msg);
+  });
+}
+
+/** Delete a QA run directory (and all its artifacts) after confirmation. */
+async function deleteQaRun(configManager: TenantConfigurationManager, provider: QaRunsProvider, arg?: unknown): Promise<void> {
+  const qaDir = activeTenantQaDir(configManager);
+  if (!qaDir) { vscode.window.showWarningMessage('Open a folder and select an active tenant.'); return; }
+
+  let runDir: vscode.Uri | undefined = arg instanceof QaItem ? arg.resourceUri : undefined;
+  if (!runDir) {
+    const dirs = (await vscode.workspace.fs.readDirectory(qaDir).then(e => e, () => []))
+      .filter(([, t]) => t === vscode.FileType.Directory).map(([n]) => n).sort().reverse();
+    if (dirs.length === 0) { vscode.window.showWarningMessage('No QA runs to delete.'); return; }
+    const pick = await vscode.window.showQuickPick(dirs, { title: 'Delete which QA run?' });
+    if (!pick) return;
+    runDir = vscode.Uri.joinPath(qaDir, pick);
+  }
+
+  const name = runDir.path.split('/').pop();
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete QA run "${name}" and all its files (brief, plan, logs, artifacts)?`,
+    { modal: true },
+    'Delete'
+  );
+  if (confirm !== 'Delete') return;
+
+  try {
+    // Prefer the OS trash (recoverable); fall back to a hard delete if unsupported.
+    await vscode.workspace.fs.delete(runDir, { recursive: true, useTrash: true });
+  } catch {
+    await vscode.workspace.fs.delete(runDir, { recursive: true });
+  }
+  provider.refresh();
+  vscode.window.showInformationMessage(`Fuuz: deleted QA run "${name}".`);
+}
+
+/**
+ * Launch a supervised headed-browser QA session: write the Playwright MCP config
+ * into the run dir and run `claude --mcp-config …` in a terminal so Claude drives
+ * the app while the developer logs each persona in manually.
+ */
+async function runQaInBrowser(configManager: TenantConfigurationManager, tokenStore: TokenStore, arg?: unknown): Promise<void> {
+  const qaDir = activeTenantQaDir(configManager);
+  if (!qaDir) { vscode.window.showWarningMessage('Open a folder and select an active tenant.'); return; }
+
+  let runDir: vscode.Uri | undefined = arg instanceof QaItem ? arg.resourceUri : undefined;
+  if (!runDir) {
+    const dirs = (await vscode.workspace.fs.readDirectory(qaDir).then(e => e, () => []))
+      .filter(([, t]) => t === vscode.FileType.Directory).map(([n]) => n).sort().reverse();
+    if (dirs.length === 0) { vscode.window.showWarningMessage('No QA runs found. Run "QA this Screen/App" first.'); return; }
+    const pick = await vscode.window.showQuickPick(dirs, { title: 'Run which QA brief in the browser?' });
+    if (!pick) return;
+    runDir = vscode.Uri.joinPath(qaDir, pick);
+  }
+
+  // Target URL from the plan, falling back to the active enterprise's env.
+  let targetUrl = '';
+  try {
+    const planBuf = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(runDir, 'plan.json'));
+    targetUrl = JSON.parse(Buffer.from(planBuf).toString('utf8'))?.target?.url ?? '';
+  } catch { /* fall back below */ }
+  if (!targetUrl) targetUrl = deriveTarget(configManager.getActiveEnterprise()?.environment ?? '').url;
+  if (!targetUrl) { vscode.window.showWarningMessage('Fuuz: no target URL — set the enterprise environment first.'); return; }
+
+  await launchClaudeQa(configManager, tokenStore, runDir, targetUrl);
 }
 
 /** Register the ERD diagram commands (single model, module, whole application). */
