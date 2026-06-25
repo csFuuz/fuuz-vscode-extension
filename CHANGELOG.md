@@ -2,6 +2,16 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## 0.29.0
+
+- **Unified QA result view**: a new **Open QA Result** action on each run renders
+  the agent's findings (per-persona step pass/fail, defects with severity + fixes,
+  UI/UX grooming) merged with the Fuuz logs collected over MCP — in one webview,
+  with clickable evidence (screenshots/GIFs).
+- The QA brief now asks the agent to write a structured `result.json` (schema
+  included) into the run directory, which the view ingests tolerantly.
+- Fixed the brief's artifacts path to be tenant-scoped (`.fuuz/qa/<tenant>/<run>/`).
+
 ## 0.28.0
 
 - **Simpler Connections panel**: connections are managed entirely by **API key**.

@@ -56,8 +56,8 @@ export interface QaPlan {
   personas: Persona[];
   destructiveAllowed: boolean;
   steps: PlanStep[];
-  /** Relative artifact directory, e.g. `.fuuz/qa/<runId>`. */
-  artifactsDir: string;
+  /** Run directory relative to the workspace root, e.g. `.fuuz/qa/<tenant>/<runId>`. */
+  runDir: string;
 }
 
 export type RunStatus = 'planned' | 'running' | 'passed' | 'failed' | 'cancelled';

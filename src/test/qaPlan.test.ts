@@ -7,7 +7,7 @@ import { Persona, RunScope } from '../qa/runTypes';
 const personas: Persona[] = [{ name: 'Operator', role: 'shop floor' }, { name: 'Supervisor' }];
 const scope: RunScope = { kind: 'screen', name: 'Work Orders', model: 'WorkOrder' };
 const mk = (target = deriveTarget('build.mfgx'), destructive = true) =>
-  buildQaPlan({ runId: 'qa-1', createdAt: '2026-06-24T00:00:00Z', scope, target, personas, destructiveAllowed: destructive });
+  buildQaPlan({ runId: 'qa-1', createdAt: '2026-06-24T00:00:00Z', scope, target, personas, destructiveAllowed: destructive, runDir: '.fuuz/qa/tnt/qa-1' });
 
 test('isLikelyTestEnv: test tokens true, prod tokens false', () => {
   assert.equal(isLikelyTestEnv('build.mfgx'), true);
@@ -28,7 +28,7 @@ test('deriveTarget: builds the app URL and flags test env', () => {
 test('buildQaPlan: includes destructive steps when allowed', () => {
   const plan = mk(deriveTarget('build.mfgx'), true);
   assert.ok(plan.steps.some(s => s.id === 'create' && s.destructive));
-  assert.equal(plan.artifactsDir, '.fuuz/qa/qa-1');
+  assert.equal(plan.runDir, '.fuuz/qa/tnt/qa-1');
 });
 
 test('buildQaPlan: omits destructive steps when not allowed', () => {
@@ -45,6 +45,8 @@ test('planToBrief: renders target, personas, checklist and safety', () => {
   assert.match(brief, /Persona 2: Supervisor/);
   assert.match(brief, /UI\/UX grooming/);
   assert.match(brief, /collected separately by the extension over MCP/);
+  assert.match(brief, /\.fuuz\/qa\/tnt\/qa-1\/result\.json/); // structured result requested
+  assert.match(brief, /\.fuuz\/qa\/tnt\/qa-1\/artifacts/); // tenant-scoped artifacts path
 });
 
 test('planToBrief: warns when destructive disabled', () => {

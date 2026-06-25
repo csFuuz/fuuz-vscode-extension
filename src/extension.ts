@@ -31,6 +31,7 @@ import type { Persona, RunScope } from './qa/runTypes';
 import { collectFuuzLogs, type LogQueryFn, type CollectedLog } from './qa/logCollector';
 import { QaRunsProvider, QaItem, activeTenantQaDir } from './qa/qaRunsProvider';
 import { buildHeadedDriver } from './qa/driver';
+import { QaResultPanel } from './qa/qaResultPanel';
 import type { ArtifactKind, ComplianceReport, DataModelDescriptor } from './qa/complianceTypes';
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -81,6 +82,9 @@ export async function activate(context: vscode.ExtensionContext) {
       ),
       vscode.commands.registerCommand('fuuz.deleteQaRun', (arg?: unknown) =>
         deleteQaRun(configManager, qaRunsProvider, arg)
+      ),
+      vscode.commands.registerCommand('fuuz.openQaResult', (arg?: unknown) =>
+        openQaResult(context, configManager, arg)
       )
     );
 
@@ -765,20 +769,19 @@ async function startQaRun(
     );
   }
 
-  const runId = `qa-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
-  const plan = buildQaPlan({ runId, createdAt: new Date().toISOString(), scope, target, personas, destructiveAllowed });
-  const brief = planToBrief(plan);
-
   // The Claude Code run needs a run directory on disk (config + artifacts),
   // scoped to the active tenant so the QA Runs view can filter by tenant.
   const tenantDir = activeTenantQaDir(configManager);
   if (!tenantDir) {
-    const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: brief });
-    await vscode.window.showTextDocument(doc, { preview: false });
     vscode.window.showWarningMessage('Fuuz: open a folder and select an active tenant to run QA with Claude Code.');
     return;
   }
+  const runId = `qa-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
   const dir = vscode.Uri.joinPath(tenantDir, runId);
+  const runRel = vscode.workspace.asRelativePath(dir, false);
+  const plan = buildQaPlan({ runId, createdAt: new Date().toISOString(), scope, target, personas, destructiveAllowed, runDir: runRel });
+  const brief = planToBrief(plan);
+
   await vscode.workspace.fs.createDirectory(dir);
   await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, 'plan.json'), Buffer.from(JSON.stringify(plan, null, 2), 'utf8'));
   const briefUri = vscode.Uri.joinPath(dir, 'brief.md');
@@ -923,6 +926,23 @@ async function deleteQaRun(configManager: TenantConfigurationManager, provider: 
   }
   provider.refresh();
   vscode.window.showInformationMessage(`Fuuz: deleted QA run "${name}".`);
+}
+
+/** Open the unified QA result view (agent result + collected Fuuz logs) for a run. */
+async function openQaResult(context: vscode.ExtensionContext, configManager: TenantConfigurationManager, arg?: unknown): Promise<void> {
+  const qaDir = activeTenantQaDir(configManager);
+  if (!qaDir) { vscode.window.showWarningMessage('Open a folder and select an active tenant.'); return; }
+
+  let runDir: vscode.Uri | undefined = arg instanceof QaItem ? arg.resourceUri : undefined;
+  if (!runDir) {
+    const dirs = (await vscode.workspace.fs.readDirectory(qaDir).then(e => e, () => []))
+      .filter(([, t]) => t === vscode.FileType.Directory).map(([n]) => n).sort().reverse();
+    if (dirs.length === 0) { vscode.window.showWarningMessage('No QA runs found. Run "QA this Screen/App" first.'); return; }
+    const pick = await vscode.window.showQuickPick(dirs, { title: 'Open which QA result?' });
+    if (!pick) return;
+    runDir = vscode.Uri.joinPath(qaDir, pick);
+  }
+  await QaResultPanel.show(context, runDir);
 }
 
 /**

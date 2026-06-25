@@ -14,6 +14,8 @@ interface PlanInput {
   target: QaTarget;
   personas: Persona[];
   destructiveAllowed: boolean;
+  /** Run directory relative to the workspace root, e.g. `.fuuz/qa/<tenant>/<runId>`. */
+  runDir: string;
 }
 
 function baseSteps(scope: RunScope): PlanStep[] {
@@ -45,7 +47,7 @@ export function buildQaPlan(input: PlanInput): QaPlan {
     personas: input.personas,
     destructiveAllowed: input.destructiveAllowed,
     steps,
-    artifactsDir: `.fuuz/qa/${input.runId}`,
+    runDir: input.runDir,
   };
 }
 
@@ -86,12 +88,29 @@ export function planToBrief(plan: QaPlan): string {
   }
   L.push('');
   L.push(`## Capture`);
-  L.push(`- Save screenshots and walkthrough GIFs under \`${plan.artifactsDir}/\` (per persona).`);
+  L.push(`- Save screenshots and walkthrough GIFs under \`${plan.runDir}/artifacts/\` (per persona).`);
   L.push(`- Record Chrome console errors and failed network requests as you go.`);
   L.push(`- Fuuz-side logs (developer console, data-flow logs, span/trace logs, integration logs) are collected separately by the extension over MCP using the developer's connection and correlated to this run — note the run start/end times.`);
   L.push('');
-  L.push(`## Report back (structured)`);
-  L.push(`For each persona and step: pass/fail, evidence (screenshot/GIF path), and any errors. Then: a prioritized list of defects with fix recommendations, and UI/UX grooming notes with concrete, specific suggestions.`);
+  L.push(`## Report back (write \`${plan.runDir}/result.json\`)`);
+  L.push(`When finished, write your results as JSON to \`${plan.runDir}/result.json\` in this exact shape so the extension can render them:`);
+  L.push('```json');
+  L.push(`{`);
+  L.push(`  "summary": "one-paragraph overall assessment",`);
+  L.push(`  "personas": [`);
+  L.push(`    { "name": "Operator", "steps": [`);
+  L.push(`      { "title": "Verify landing", "status": "pass|fail|skip|blocked", "notes": "...", "evidence": "artifacts/landing.png" }`);
+  L.push(`    ] }`);
+  L.push(`  ],`);
+  L.push(`  "defects": [`);
+  L.push(`    { "severity": "high|medium|low", "title": "...", "detail": "...", "fix": "...", "evidence": "artifacts/bug.png" }`);
+  L.push(`  ],`);
+  L.push(`  "uxNotes": [`);
+  L.push(`    { "area": "navigation", "note": "...", "recommendation": "..." }`);
+  L.push(`  ]`);
+  L.push(`}`);
+  L.push('```');
+  L.push(`Evidence paths are relative to the run directory (e.g. \`artifacts/landing.png\`).`);
   L.push('');
   L.push(`_Run id: ${plan.runId} · generated ${plan.createdAt}_`);
   return L.join('\n');

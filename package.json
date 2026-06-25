@@ -2,7 +2,7 @@
   "name": "fuuz-vscode-extension",
   "displayName": "Fuuz for VS Code",
   "description": "VS Code extension for Fuuz application management with multi-tenant MCP support",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "publisher": "cscott",
   "icon": "media/icon.png",
   "repository": {
@@ -129,6 +129,12 @@
         "title": "Run QA in Browser",
         "category": "Fuuz",
         "icon": "$(play)"
+      },
+      {
+        "command": "fuuz.openQaResult",
+        "title": "Open QA Result",
+        "category": "Fuuz",
+        "icon": "$(open-preview)"
       },
       {
         "command": "fuuz.collectQaLogs",
@@ -423,6 +429,11 @@
           "group": "inline"
         },
         {
+          "command": "fuuz.openQaResult",
+          "when": "view == fuuzQaRuns && viewItem == run",
+          "group": "inline"
+        },
+        {
           "command": "fuuz.runQaInBrowser",
           "when": "view == fuuzQaRuns && viewItem == run",
           "group": "inline"
@@ -472,7 +483,7 @@
     "watch:webview": "node scripts/build-webview.mjs --watch",
     "lint": "eslint src --ext ts --ignore-pattern \"**/*.test.ts\" --ignore-pattern \"src/webview/**\"",
     "test": "tsc -p tsconfig.test.json && node --test out/test/*.test.js",
-    "test:webview": "npm run build:webview && node scripts/smoke-config-webview.mjs && node scripts/smoke-report-webview.mjs"
+    "test:webview": "npm run build:webview && node scripts/smoke-config-webview.mjs && node scripts/smoke-report-webview.mjs && node scripts/smoke-qaresult-webview.mjs"
   },
   "devDependencies": {
     "@dagrejs/dagre": "^3.0.0",
