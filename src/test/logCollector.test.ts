@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { collectFuuzLogs, shapeDataFlowLogs, shapeIntegrationLogs, shapeSpanLogs, LogQueryFn } from '../qa/logCollector';
+import { collectFuuzLogs, shapeIntegrationLogs, shapeSpanLogs, LogQueryFn } from '../qa/logCollector';
 
 test('shapeIntegrationLogs: error field drives error severity', () => {
   const logs = shapeIntegrationLogs([
@@ -12,33 +12,23 @@ test('shapeIntegrationLogs: error field drives error severity', () => {
   assert.equal(logs[1].severity, 'info');
 });
 
-test('shapeDataFlowLogs: severity inferred from message text', () => {
-  const logs = shapeDataFlowLogs([
-    { id: '1', message: 'Validation failed for field x', nodeName: 'validate', nodeType: 'transform' },
-    { id: '2', message: 'Completed step', nodeName: 'out', nodeType: 'output' },
-  ]);
-  assert.equal(logs[0].severity, 'error');
-  assert.equal(logs[1].severity, 'info');
-  assert.equal(logs[0].where, 'validate / transform');
-});
-
 test('shapeSpanLogs: builds a readable message + location', () => {
   const logs = shapeSpanLogs([{ id: '1', eventType: 'Mutation', topic: 'workOrder.update', url: '/work-orders/42', createdAt: 't' }]);
   assert.match(logs[0].message, /Mutation · workOrder.update/);
   assert.equal(logs[0].where, '/work-orders/42');
 });
 
-test('collectFuuzLogs: queries each source with a window filter and sorts errors first', async () => {
+test('collectFuuzLogs: queries runtime sources with a window filter and sorts errors first', async () => {
   const seen: string[] = [];
   const query: LogQueryFn = async (model, _fields, where) => {
     seen.push(model);
     assert.match(where, /_gte/);
     if (model === 'IntegrationRequestLog') return [{ id: '1', error: 'boom', connectionName: 'X', requestTimestamp: 't' }];
-    if (model === 'DataFlowDeploymentLog') return [{ id: '2', message: 'ok', nodeName: 'n', nodeType: 'output' }];
     return [{ id: '3', eventType: 'Query', topic: 'x', createdAt: 't' }];
   };
   const logs = await collectFuuzLogs(query, { startIso: 'a', endIso: 'b' });
-  assert.deepEqual(seen.sort(), ['ApplicationSpanEventLog', 'DataFlowDeploymentLog', 'IntegrationRequestLog']);
+  assert.deepEqual(seen.sort(), ['ApplicationSpanEventLog', 'IntegrationRequestLog']);
+  assert.ok(!seen.includes('DataFlowDeploymentLog'), 'deploy logs excluded');
   assert.equal(logs[0].severity, 'error'); // sorted: integration error first
 });
 

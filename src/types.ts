@@ -182,6 +182,12 @@ export interface McpSnapshot {
   application: ModuleGroup[];
   /** Data models flagged as system (vs application/custom). */
   systemDataModels: DataModel[];
+  /** Tenant-global scripts (SavedTransform) — not scoped to a module group. */
+  scripts: Script[];
+  /** Tenant-global saved queries/mutations (SavedQuery) — not module-scoped. */
+  queries: GraphQLOperation[];
+  /** Tenant-global document designs (DocumentDesign) — not module-scoped. */
+  documents: Document[];
   /** Discovery problems (e.g. authorization errors) so failures aren't silent. */
   issues: string[];
 }

@@ -8,6 +8,14 @@
 
 export type RunScopeKind = 'screen' | 'app';
 
+/**
+ * How much latitude the agent has during a run.
+ * - `autonomous`: full authority — once the persona is logged in, Claude proceeds
+ *   without per-action confirmation (launched with permission prompts bypassed).
+ * - `manual`: supervised — Claude pauses to confirm before each major step.
+ */
+export type RunAuthority = 'autonomous' | 'manual';
+
 /** A test identity the developer creates and logs into one at a time. */
 export interface Persona {
   /** Short label, e.g. "Operator", "Supervisor". */
@@ -55,7 +63,10 @@ export interface QaPlan {
   target: QaTarget;
   personas: Persona[];
   destructiveAllowed: boolean;
+  authority: RunAuthority;
   steps: PlanStep[];
+  /** Security & RBAC probe objectives (forced browsing, client-RBAC, injection). */
+  securitySteps: PlanStep[];
   /** Run directory relative to the workspace root, e.g. `.fuuz/qa/<tenant>/<runId>`. */
   runDir: string;
 }

@@ -52,6 +52,37 @@ export function applyFuuzServers(
   return { config, hadFuuzEntries };
 }
 
+/** A managed `fuuz-*` server whose token is an env-var reference (not embedded). */
+export function isEnvRefServer(server: any): boolean {
+  const auth = server?.headers?.Authorization;
+  if (typeof auth === 'string' && auth.includes('${')) return true;
+  return !!(server?.env && (server.env.FUUZ_TOKEN_ENV || String(server.env.FUUZ_TOKEN ?? '').includes('${')));
+}
+
+/** A managed `fuuz-*` server whose token is embedded (a real, usable credential). */
+export function isEmbeddedServer(server: any): boolean {
+  const auth = server?.headers?.Authorization;
+  if (typeof auth === 'string' && /^Bearer\s+\S/.test(auth) && !auth.includes('${')) return true;
+  return !!(server?.env && server.env.FUUZ_TOKEN && !String(server.env.FUUZ_TOKEN).includes('${'));
+}
+
+const fuuzServers = (config: any): Record<string, any> => {
+  const ms = isPlainObject(config?.mcpServers) ? config.mcpServers : {};
+  return Object.fromEntries(Object.entries(ms).filter(([k]) => k.startsWith('fuuz-')));
+};
+
+/**
+ * Project-scope `fuuz-*` servers that use env-var token refs AND are also present
+ * (embedded) in the user config. Claude Code gives the project file precedence,
+ * so these *shadow* the working embedded servers and fail to auth unless the env
+ * vars are exported — exactly the conflict to surface/clean up.
+ */
+export function shadowingFuuzServers(projectConfig: any, userConfig: any): string[] {
+  const proj = fuuzServers(projectConfig);
+  const user = fuuzServers(userConfig);
+  return Object.keys(proj).filter(k => isEnvRefServer(proj[k]) && user[k] && isEmbeddedServer(user[k]));
+}
+
 /**
  * Write a file atomically: write to a sibling temp file, then rename over the
  * target. `rename` is atomic on the same filesystem, so a reader (e.g. Claude

@@ -22,6 +22,10 @@ import type { ErdService } from './util/erdTypes';
 import { fuuzLog } from './services/logger';
 import { isAbortError } from './util/abort';
 import { runCompliance } from './qa/complianceChecker';
+import { runFlowGraphCompliance, analyzeFlowsCrossCutting } from './qa/flowAnalysis';
+import { chooseFlowFields, flowFkField, adaptFlowElements } from './qa/flowDescriptor';
+import type { FlowGraph } from './qa/flowTypes';
+import { runTenantAudit } from './qa/tenantAudit';
 import { scaffoldFor } from './qa/scaffolds';
 import { parseOutline, kindFromFileName, OutlineParseError } from './qa/outline';
 import { ReportPanel } from './qa/reportPanel';
@@ -135,6 +139,19 @@ export async function activate(context: vscode.ExtensionContext) {
     if (hasConfig) {
       // Register existing connections with Claude on startup (per fuuz.claudeAutoRegister).
       claudeMcpWriter.scheduleAutoSync();
+
+      // Warn if a project .mcp.json shadows the working user-scoped Fuuz servers
+      // (env-var token refs that fail in Claude unless exported → /mcp auth errors).
+      void (async () => {
+        const shadows = await claudeMcpWriter.projectShadowedServers().catch(() => []);
+        if (shadows.length === 0) return;
+        const FIX = 'Remove from .mcp.json';
+        const choice = await vscode.window.showWarningMessage(
+          `Fuuz: your project .mcp.json defines ${shadows.length} Fuuz server(s) with env-var tokens that override the working user-scoped ones — Claude will fail to authenticate them unless you export those vars. Remove them so Claude uses the embedded servers?`,
+          FIX, 'Keep'
+        );
+        if (choice === FIX) await vscode.commands.executeCommand('fuuz.fixClaudeMcpConflicts');
+      })();
 
       // Auto-refresh the active tenant on startup if its cache is stale (>30 min).
       void (async () => {
@@ -412,6 +429,22 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     }
   });
 
+  // Remove project-scope .mcp.json fuuz servers that shadow the working
+  // embedded user-scope servers (the cause of Claude /mcp auth errors).
+  register('fuuz.fixClaudeMcpConflicts', async () => {
+    const shadows = await claudeMcpWriter.projectShadowedServers();
+    if (shadows.length === 0) {
+      vscode.window.showInformationMessage('Fuuz: no conflicting project .mcp.json servers — Claude uses the working user-scoped Fuuz servers.');
+      return;
+    }
+    const { removed, path: p } = await claudeMcpWriter.clearProjectFuuzServers();
+    if (removed.length) {
+      vscode.window.showInformationMessage(
+        `Fuuz: removed ${removed.length} shadowing Fuuz server(s) from ${p}. Claude now uses the embedded user-scoped servers — restart Claude / run /mcp.`
+      );
+    }
+  });
+
   register('fuuz.generateContextDoc', async () => {
     const uri = await contextDocWriter.write();
     if (uri) {
@@ -566,6 +599,114 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       }
     }
     await startQaRun(configManager, tokenStore, { kind: 'app', name: tenant.name, screens });
+  });
+
+  // Flow compliance: analyze a real deployed flow's nodes over MCP.
+  register('fuuz.checkFlowCompliance', async (arg?: unknown) => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const node = nodeArg(arg);
+    const flowId = node?.id;
+    if (!flowId) { vscode.window.showWarningMessage('Run this on a flow node.'); return; }
+    const flow = { id: flowId, name: node?.name ?? 'Flow', type: node?.type };
+
+    await withCancellable(`Fuuz: analyzing ${flow.name}…`, async () => {
+      const cache: FlowFetchCache = {};
+      const graph = await fetchFlowGraph(resourceService, tenant, flow, cache);
+      if (!graph) {
+        vscode.window.showWarningMessage("Fuuz: couldn't read this flow's nodes over MCP (DataFlowElement schema). Confirm the tenant connection and try again.");
+        return;
+      }
+      const report = runFlowGraphCompliance(graph);
+      ReportPanel.show(context, report);
+      const msg = `Fuuz: ${flow.name} — ${report.score}% (${report.passed}/${report.checks} checks, ${graph.nodes.length} nodes).`;
+      if (report.score >= 90) vscode.window.showInformationMessage(msg);
+      else vscode.window.showWarningMessage(msg);
+    });
+  });
+
+  // Flow compliance: cross-cutting analysis across all of the app's flows.
+  register('fuuz.checkAllFlows', async () => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const snap = configManager.getCachedResources(tenant.id);
+    const flows: Array<{ id: string; name: string; type?: string }> = [];
+    for (const mg of snap?.mcp?.application ?? []) {
+      for (const m of mg.modules ?? []) {
+        for (const f of m.flows ?? []) if (f.id) flows.push({ id: f.id, name: f.name, type: f.type });
+      }
+    }
+    if (flows.length === 0) { vscode.window.showInformationMessage('Fuuz: no flows to analyze (sync the tenant first).'); return; }
+    const MAX = 50;
+    const slice = flows.slice(0, MAX);
+
+    await withCancellable(`Fuuz: analyzing ${slice.length} flows…`, async () => {
+      const cache: FlowFetchCache = {};
+      const graphs: FlowGraph[] = [];
+      for (const f of slice) {
+        const g = await fetchFlowGraph(resourceService, tenant, f, cache).catch(() => null);
+        if (g) graphs.push(g);
+      }
+      if (graphs.length === 0) { vscode.window.showWarningMessage("Fuuz: couldn't read flow nodes over MCP. Confirm the tenant connection."); return; }
+      if (flows.length > MAX) fuuzLog(`checkAllFlows: analyzed first ${MAX} of ${flows.length} flows.`);
+      const report = analyzeFlowsCrossCutting(graphs);
+      ReportPanel.show(context, report);
+      vscode.window.showInformationMessage(`Fuuz: analyzed ${graphs.length} flows for shared queries/scripts (${report.findings.length} suggestion(s)).`);
+    });
+  });
+
+  // Audit the whole tenant: compliance on every model + flow → summary report.
+  register('fuuz.checkTenant', async () => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const snap = configManager.getCachedResources(tenant.id);
+    const models: string[] = [];
+    const flows: Array<{ id: string; name: string; type?: string }> = [];
+    for (const mg of snap?.mcp?.application ?? []) {
+      for (const m of mg.modules ?? []) {
+        for (const dm of m.dataModels ?? []) if (dm.name) models.push(dm.name);
+        for (const f of m.flows ?? []) if (f.id) flows.push({ id: f.id, name: f.name, type: f.type });
+      }
+    }
+    if (models.length === 0 && flows.length === 0) {
+      vscode.window.showInformationMessage('Fuuz: nothing to audit (sync the tenant first).');
+      return;
+    }
+    const MODEL_CAP = 150, FLOW_CAP = 100;
+
+    await withCancellable(`Fuuz: auditing ${tenant.name}…`, async signal => {
+      const reports: ComplianceReport[] = [];
+      const cache: FlowFetchCache = {};
+      const flowGraphs: FlowGraph[] = [];
+
+      for (const name of models.slice(0, MODEL_CAP)) {
+        if (signal?.aborted) return;
+        const graph = await resourceService.getModelGraph(tenant, name, 'application', signal).catch(() => null);
+        if (!graph) continue;
+        const descriptor: DataModelDescriptor = {
+          kind: 'dataModel', name: graph.name,
+          fields: graph.fields.map(f => ({ name: f.name, type: f.type })),
+          relations: graph.relations.map(r => ({ field: r.field, target: r.target, many: r.many })),
+        };
+        reports.push(runCompliance(descriptor));
+      }
+      for (const f of flows.slice(0, FLOW_CAP)) {
+        if (signal?.aborted) return;
+        const g = await fetchFlowGraph(resourceService, tenant, f, cache).catch(() => null);
+        if (g) { flowGraphs.push(g); reports.push(runFlowGraphCompliance(g)); }
+      }
+      if (flowGraphs.length > 1) reports.push(analyzeFlowsCrossCutting(flowGraphs));
+
+      if (reports.length === 0) { vscode.window.showWarningMessage('Fuuz: audit produced no results (check the tenant connection).'); return; }
+      const audit = runTenantAudit(tenant.name, reports);
+      ReportPanel.show(context, audit);
+      if (models.length > MODEL_CAP || flows.length > FLOW_CAP) {
+        fuuzLog(`tenant audit: capped at ${MODEL_CAP} models / ${FLOW_CAP} flows (tenant has ${models.length}/${flows.length}).`);
+      }
+      const msg = `Fuuz: ${tenant.name} — ${audit.score}% across ${reports.length} artifact(s).`;
+      if (audit.score >= 90) vscode.window.showInformationMessage(msg);
+      else vscode.window.showWarningMessage(msg);
+    });
   });
 
   // Schema Doctor: write a convention-compliant outline for a new artifact.
@@ -755,10 +896,21 @@ async function startQaRun(
   if (!personaRaw) return;
   const personas: Persona[] = personaRaw.split(',').map(s => s.trim()).filter(Boolean).map(name => ({ name }));
 
+  // Authority: full autonomy (no per-action prompts) vs supervised/manual.
+  const authPick = await vscode.window.showQuickPick(
+    [
+      { label: '$(rocket) Autonomous — full authority', detail: 'Claude proceeds without asking after each persona logs in (recommended).', value: 'autonomous' as const },
+      { label: '$(person) Manual — supervised', detail: 'Claude pauses to confirm before each major step.', value: 'manual' as const },
+    ],
+    { title: 'How should Claude run this QA?', placeHolder: 'Autonomous runs end-to-end; you only log each persona in', ignoreFocusOut: true }
+  );
+  if (!authPick) return;
+  const authority = authPick.value;
+
   // Destructive steps are only ever offered on a test-looking environment.
   let destructiveAllowed = false;
   if (target.isTestEnv) {
-    const d = await vscode.window.showQuickPick(['No — navigate & read only', 'Yes — allow create/update/delete'], {
+    const d = await vscode.window.showQuickPick(['No — navigate & read only', 'Yes — allow create/update/delete + injection probes'], {
       title: `Enable destructive steps on ${target.envSlug}?`, ignoreFocusOut: true,
     });
     if (d === undefined) return;
@@ -779,7 +931,7 @@ async function startQaRun(
   const runId = `qa-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
   const dir = vscode.Uri.joinPath(tenantDir, runId);
   const runRel = vscode.workspace.asRelativePath(dir, false);
-  const plan = buildQaPlan({ runId, createdAt: new Date().toISOString(), scope, target, personas, destructiveAllowed, runDir: runRel });
+  const plan = buildQaPlan({ runId, createdAt: new Date().toISOString(), scope, target, personas, destructiveAllowed, authority, runDir: runRel });
   const brief = planToBrief(plan);
 
   await vscode.workspace.fs.createDirectory(dir);
@@ -818,6 +970,14 @@ async function launchClaudeQa(
   // trust each new per-run directory; point everything at the run subfolder.
   const workspace = vscode.workspace.workspaceFolders?.[0];
   const runRel = workspace ? vscode.workspace.asRelativePath(runDir, false) : runDir.fsPath;
+
+  // Authority comes from the run's plan (default: manual/supervised).
+  let autonomous = false;
+  try {
+    const planBuf = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(runDir, 'plan.json'));
+    autonomous = JSON.parse(Buffer.from(planBuf).toString('utf8'))?.authority === 'autonomous';
+  } catch { /* default manual */ }
+
   const launch = buildHeadedDriver({
     runDirFsPath: runDir.fsPath,
     briefPath: `${runRel}/brief.md`,
@@ -825,6 +985,7 @@ async function launchClaudeQa(
     artifactsPath: `${runRel}/artifacts`,
     targetUrl,
     fuuz,
+    autonomous,
   });
   await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(runDir, 'mcp.qa.json'), Buffer.from(JSON.stringify(launch.mcpConfig, null, 2), 'utf8'));
 
@@ -868,14 +1029,25 @@ async function collectQaLogs(
     runDir = vscode.Uri.joinPath(qaDir, pick);
   }
 
-  // Window start = the plan's createdAt (fallback: 1 hour ago); end = now.
-  let startIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  // Window: from the run's start (plan.createdAt) to its end (result.json mtime if
+  // the agent finished, else now) — capped to MAX_WINDOW so collecting days later
+  // doesn't sweep in unrelated activity.
+  const MAX_WINDOW_MS = 3 * 60 * 60 * 1000; // 3h
+  let startMs = Date.now() - 60 * 60 * 1000;
   try {
     const planBuf = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(runDir, 'plan.json'));
     const created = JSON.parse(Buffer.from(planBuf).toString('utf8'))?.createdAt;
-    if (typeof created === 'string') startIso = created;
+    const t = created ? Date.parse(created) : NaN;
+    if (!Number.isNaN(t)) startMs = t;
   } catch { /* no plan.json — use the fallback window */ }
-  const endIso = new Date().toISOString();
+  let endMs = Date.now();
+  try {
+    const stat = await vscode.workspace.fs.stat(vscode.Uri.joinPath(runDir, 'result.json'));
+    endMs = stat.mtime; // the run actually finished here
+  } catch { /* no result yet — bound below */ }
+  if (endMs - startMs > MAX_WINDOW_MS) endMs = startMs + MAX_WINDOW_MS;
+  const startIso = new Date(startMs).toISOString();
+  const endIso = new Date(endMs).toISOString();
 
   const query: LogQueryFn = (model, fields, where) =>
     resourceService.queryModel(tenant, model, fields, where, 'application').then(r => r?.records ?? []);
@@ -974,6 +1146,56 @@ async function runQaInBrowser(configManager: TenantConfigurationManager, tokenSt
   if (!targetUrl) { vscode.window.showWarningMessage('Fuuz: no target URL — set the enterprise environment first.'); return; }
 
   await launchClaudeQa(configManager, tokenStore, runDir, targetUrl);
+}
+
+/** Cached schema lookups reused across flows in one analysis run. */
+interface FlowFetchCache {
+  /** DataFlowElement field names (discovered once). */
+  fields?: string[];
+  /** dataFlowElementTypeId → label, resolved once. */
+  typeLabels?: Map<string, string>;
+}
+
+/**
+ * Read a flow's nodes (`DataFlowElement`) over MCP and adapt them to a FlowGraph.
+ * Discovers the model's fields at runtime so it adapts to the tenant's schema
+ * rather than assuming field names. Returns null when the nodes can't be read.
+ */
+async function fetchFlowGraph(
+  resourceService: TenantDataService,
+  tenant: import('./types').Tenant,
+  flow: { id: string; name: string; type?: string },
+  cache: FlowFetchCache
+): Promise<FlowGraph | null> {
+  if (!cache.fields) {
+    const meta = await resourceService.getModelFields(tenant, 'DataFlowElement').catch(() => []);
+    cache.fields = meta.map(f => f.name);
+  }
+  const available = cache.fields;
+  if (available.length === 0) return null;
+
+  const fk = flowFkField(available);
+  if (!fk) return null; // can't link elements to the flow
+
+  const fields = chooseFlowFields(available);
+  const where = JSON.stringify({ [fk]: { _eq: flow.id } });
+  const res = await resourceService.queryModel(tenant, 'DataFlowElement', fields, where).catch(() => null);
+  if (!res) return null;
+
+  // Resolve element-type labels once (when nodes only carry a typeId).
+  if (!cache.typeLabels && available.includes('dataFlowElementTypeId')) {
+    cache.typeLabels = new Map();
+    try {
+      const tMeta = await resourceService.getModelFields(tenant, 'DataFlowElementType');
+      const labelField = ['label', 'name', 'title'].find(n => tMeta.some(f => f.name === n));
+      if (labelField) {
+        const tRes = await resourceService.queryModel(tenant, 'DataFlowElementType', ['id', labelField], '{}');
+        for (const r of tRes?.records ?? []) if (r.id) cache.typeLabels.set(r.id, r[labelField]);
+      }
+    } catch { /* leave labels empty — types degrade to "other" */ }
+  }
+
+  return adaptFlowElements(flow.name, flow.type, res.records, available, cache.typeLabels);
 }
 
 /** Register the ERD diagram commands (single model, module, whole application). */

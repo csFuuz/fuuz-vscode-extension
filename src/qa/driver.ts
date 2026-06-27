@@ -29,6 +29,8 @@ interface DriverOptions {
   /** Artifacts path relative to the launch cwd, e.g. `.fuuz/qa/<run>/artifacts`. */
   artifactsPath: string;
   targetUrl: string;
+  /** Full authority: launch Claude with permission prompts bypassed. */
+  autonomous: boolean;
   /**
    * Optionally also expose the active tenant's Fuuz MCP server to the session so
    * Claude can cross-reference schema / data / logs while testing. The token is
@@ -68,19 +70,24 @@ export function buildHeadedDriver(opts: DriverOptions): DriverLaunch {
   }
   const mcpConfig = { mcpServers };
 
+  const authorityLine = opts.autonomous
+    ? `Once I log a persona in, proceed with COMPLETE AUTHORITY for that persona — do everything the brief requires without asking; only pause for the one-time persona login.`
+    : `For each persona, STOP and ask me to log in manually, and confirm before each major step.`;
   const prompt = [
     `Execute the QA brief in ${opts.briefPath} against ${opts.targetUrl} using the Playwright MCP browser tools.`,
-    `For each persona, STOP and ask me to log in manually in the opened browser, then continue once I confirm.`,
+    authorityLine,
     opts.fuuz ? `The Fuuz MCP server for this tenant is also available — use it to cross-reference schema, data, and logs.` : '',
-    `Capture screenshots and a walkthrough GIF into ${opts.artifactsPath}, record any browser console/network errors,`,
-    `and finish with a structured report (pass/fail per step, defects with fixes, and UI/UX grooming notes).`,
+    `Save all screenshots/GIFs under ${opts.artifactsPath} (never the workspace root), record any browser console/network errors,`,
+    `and write the structured result to ${opts.artifactsPath.replace(/\/artifacts$/, '')}/result.json as described in the brief.`,
   ].filter(Boolean).join(' ');
 
   // Prompt MUST come before --mcp-config: the flag is variadic (`<configs...>`)
   // and would otherwise swallow the prompt as another config path. Single-quoted
   // (the prompt contains no single quotes). --strict-mcp-config limits the session
-  // to exactly these servers, ignoring the user's global MCP config.
-  const shellCommand = `claude '${prompt}' --mcp-config ${opts.mcpConfigPath} --strict-mcp-config`;
+  // to exactly these servers; autonomous runs bypass per-tool permission prompts.
+  const flags = [`--mcp-config ${opts.mcpConfigPath}`, '--strict-mcp-config'];
+  if (opts.autonomous) flags.push('--permission-mode bypassPermissions');
+  const shellCommand = `claude '${prompt}' ${flags.join(' ')}`;
 
   return { mcpConfig, prompt, shellCommand };
 }

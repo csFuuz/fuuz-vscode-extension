@@ -5,7 +5,7 @@
  * objectives are included only when the target is a test env and the developer
  * opted in. Pure; timestamps/ids are passed in so it stays deterministic.
  */
-import { PlanStep, QaPlan, RunScope, QaTarget, Persona } from './runTypes';
+import { PlanStep, QaPlan, RunScope, QaTarget, Persona, RunAuthority } from './runTypes';
 
 interface PlanInput {
   runId: string;
@@ -14,8 +14,25 @@ interface PlanInput {
   target: QaTarget;
   personas: Persona[];
   destructiveAllowed: boolean;
+  authority: RunAuthority;
   /** Run directory relative to the workspace root, e.g. `.fuuz/qa/<tenant>/<runId>`. */
   runDir: string;
+}
+
+/**
+ * Security & RBAC probe objectives — authorized testing of the developer's own
+ * app to surface front-end access gaps. Even when a persona can't *navigate* to
+ * a screen, these check whether the data/actions are actually protected
+ * server-side (vs hidden only in the client) and whether inputs are sanitized.
+ */
+function securityObjectives(): PlanStep[] {
+  return [
+    { id: 'sec-forced-browse', title: 'Forced browsing', detail: 'Directly navigate to URLs/routes for screens this persona should NOT see. Confirm access is denied and no data leaks (a blank page that still loads data is a leak).' },
+    { id: 'sec-client-rbac', title: 'Client-only RBAC', detail: 'Find actions hidden/disabled for this role (delete, approve, admin). Try to invoke them anyway via the UI and the underlying request. If the server allows it, that is an RBAC leak — record it.' },
+    { id: 'sec-console-probe', title: 'Console / API probe', detail: 'In the browser console, call the app’s data APIs and try to read/mutate records the persona should not access. Note anything the server returns that the UI hid.', destructive: true },
+    { id: 'sec-xss', title: 'XSS / input sanitization', detail: 'Enter payloads like `<img src=x onerror=alert(1)>` and `">` + script into text fields and filters. Verify they are escaped/sanitized and never execute.', destructive: true },
+    { id: 'sec-injection', title: 'Injection in filters/inputs', detail: 'Submit SQL/NoSQL/template-style payloads in inputs and query filters. Verify they are rejected/parameterized, not interpreted.', destructive: true },
+  ];
 }
 
 function baseSteps(scope: RunScope): PlanStep[] {
@@ -38,7 +55,7 @@ function baseSteps(scope: RunScope): PlanStep[] {
 }
 
 export function buildQaPlan(input: PlanInput): QaPlan {
-  const steps = baseSteps(input.scope).filter(s => input.destructiveAllowed || !s.destructive);
+  const keep = (s: PlanStep) => input.destructiveAllowed || !s.destructive;
   return {
     runId: input.runId,
     createdAt: input.createdAt,
@@ -46,7 +63,9 @@ export function buildQaPlan(input: PlanInput): QaPlan {
     target: input.target,
     personas: input.personas,
     destructiveAllowed: input.destructiveAllowed,
-    steps,
+    authority: input.authority,
+    steps: baseSteps(input.scope).filter(keep),
+    securitySteps: securityObjectives().filter(keep),
     runDir: input.runDir,
   };
 }
@@ -78,17 +97,32 @@ export function planToBrief(plan: QaPlan): string {
     L.push(`- Destructive steps are **disabled** — navigate, read, and fill forms but **do not** submit creates/updates/deletes.`);
   }
   L.push('');
+  L.push(`## Authority`);
+  if (plan.authority === 'autonomous') {
+    L.push(`- **Autonomous — full authority.** Once the persona is logged in, act with **COMPLETE AUTHORITY** for that persona: click, fill, navigate, and (where enabled) create/update/delete **without asking for confirmation**. Do everything the checklist requires end-to-end. The **only** time you pause is the one-time login for each persona.`);
+  } else {
+    L.push(`- **Manual — supervised.** Confirm with me before each major step, and especially before any destructive action.`);
+  }
+  L.push('');
   L.push(`## Personas (test one at a time)`);
-  L.push(`The developer will log each persona in manually in the browser, then tell you to proceed. For each persona below, run the full checklist, then stop and wait for the next login.`);
+  L.push(`The developer logs each persona in manually in the browser (you do not have credentials). For each persona: ask me to log in, then run the full checklist + security probes as that persona, then stop for the next login.`);
   L.push('');
   plan.personas.forEach((p, i) => { L.push(personaBlock(p, i)); L.push(''); });
-  L.push(`## Checklist (per persona)`);
+  L.push(`## Functional checklist (per persona)`);
   for (const s of plan.steps) {
     L.push(`- [ ] **${s.title}**${s.destructive ? ' _(destructive)_' : ''} — ${s.detail}`);
   }
   L.push('');
+  if (plan.securitySteps.length) {
+    L.push(`## Security & RBAC probes (per persona)`);
+    L.push(`Authorized testing of this app to surface front-end access gaps. The goal is to find places where the UI *hides* something the server still permits — those are RBAC leaks to fix in the build. Record each as a defect with severity when the server allows what the role should not.`);
+    for (const s of plan.securitySteps) {
+      L.push(`- [ ] **${s.title}**${s.destructive ? ' _(submits payloads)_' : ''} — ${s.detail}`);
+    }
+    L.push('');
+  }
   L.push(`## Capture`);
-  L.push(`- Save screenshots and walkthrough GIFs under \`${plan.runDir}/artifacts/\` (per persona).`);
+  L.push(`- Save ALL screenshots and walkthrough GIFs under \`${plan.runDir}/artifacts/\` — **never** the workspace root. The browser is already configured to write there; pass paths under \`${plan.runDir}/artifacts/\` for any file you save.`);
   L.push(`- Record Chrome console errors and failed network requests as you go.`);
   L.push(`- Fuuz-side logs (developer console, data-flow logs, span/trace logs, integration logs) are collected separately by the extension over MCP using the developer's connection and correlated to this run — note the run start/end times.`);
   L.push('');

@@ -5,7 +5,7 @@ import * as path from 'path';
 import { TenantConfigurationManager } from './tenantConfigurationManager';
 import { TokenStore } from './tokenStore';
 import { Enterprise, Tenant } from '../types';
-import { applyFuuzServers, ensureDir, readJsonFile, serializeConfig, writeFileAtomic } from '../util/claudeConfig';
+import { applyFuuzServers, ensureDir, isPlainObject, readJsonFile, serializeConfig, shadowingFuuzServers, writeFileAtomic } from '../util/claudeConfig';
 
 /** A Claude client we can write MCP configuration into. */
 export type ClaudeTarget = 'project' | 'user' | 'desktop';
@@ -121,6 +121,35 @@ export class ClaudeMcpWriter {
       case 'desktop':
         return claudeDesktopConfigPath();
     }
+  }
+
+  /**
+   * Project-scope `fuuz-*` servers that use env-var token refs while the user
+   * config has the same servers embedded — these shadow the working user
+   * servers in Claude Code (project scope wins) and fail to auth unless the env
+   * vars are exported.
+   */
+  async projectShadowedServers(): Promise<string[]> {
+    const projectPath = this.pathFor('project');
+    const userPath = this.pathFor('user');
+    if (!projectPath || !userPath) return [];
+    const [proj, user] = await Promise.all([readJsonFile(projectPath), readJsonFile(userPath)]);
+    if (!proj || !user) return [];
+    return shadowingFuuzServers(proj, user);
+  }
+
+  /** Remove all `fuuz-*` entries from the project `.mcp.json` (preserving others). */
+  async clearProjectFuuzServers(): Promise<{ removed: string[]; path: string | null }> {
+    const file = this.pathFor('project');
+    if (!file) return { removed: [], path: null };
+    const config = await readJsonFile(file);
+    if (!config) return { removed: [], path: null };
+    const before = isPlainObject(config.mcpServers) ? Object.keys(config.mcpServers).filter(k => k.startsWith('fuuz-')) : [];
+    if (before.length === 0) return { removed: [], path: file };
+    applyFuuzServers(config, {}); // strips fuuz-*, adds none
+    await ensureDir(file);
+    await writeFileAtomic(file, serializeConfig(config));
+    return { removed: before, path: file };
   }
 
   async sync(targets: ClaudeTarget[]): Promise<ClaudeTargetResult[]> {

@@ -50,16 +50,6 @@ export function shapeSpanLogs(rows: Rec[]): CollectedLog[] {
   }));
 }
 
-export function shapeDataFlowLogs(rows: Rec[]): CollectedLog[] {
-  return rows.map(r => ({
-    source: 'fuuz-dataflowlog' as FindingSource,
-    severity: severityFromText(r.message, r.shortMessage, r.nodeType),
-    message: r.shortMessage || r.message || 'data-flow log',
-    at: r.createdAt,
-    where: [r.nodeName, r.nodeType].filter(Boolean).join(' / ') || undefined,
-  }));
-}
-
 export function shapeIntegrationLogs(rows: Rec[]): CollectedLog[] {
   return rows.map(r => ({
     source: 'integration-log' as FindingSource,
@@ -77,9 +67,11 @@ interface SourceDef {
   shape: (rows: Rec[]) => CollectedLog[];
 }
 
+// Runtime sources only. (DataFlowDeploymentLog is *deploy-time* build noise —
+// addVersion / version-validation — unrelated to a browser QA run; runtime flow
+// activity already shows up in ApplicationSpanEventLog via dataFlowId spans.)
 export const LOG_SOURCES: SourceDef[] = [
   { model: 'ApplicationSpanEventLog', tsField: 'createdAt', fields: ['id', 'eventType', 'topic', 'url', 'executionTime', 'createdAt'], shape: shapeSpanLogs },
-  { model: 'DataFlowDeploymentLog', tsField: 'createdAt', fields: ['id', 'message', 'shortMessage', 'nodeName', 'nodeType', 'createdAt'], shape: shapeDataFlowLogs },
   { model: 'IntegrationRequestLog', tsField: 'requestTimestamp', fields: ['id', 'error', 'connectionName', 'requestName', 'responseTime', 'requestTimestamp'], shape: shapeIntegrationLogs },
 ];
 

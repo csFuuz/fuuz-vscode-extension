@@ -31,7 +31,11 @@ function App() {
     <>
       <header>
         <h1>QA Result — {p.scopeName}</h1>
-        <div className="sub">{p.runId} · {p.target.url} (<span>{p.target.envSlug}</span>)</div>
+        <div className="sub">
+          {p.runId}
+          {p.target.url ? ` · ${p.target.url}` : ''}
+          {p.target.envSlug ? ` (${p.target.envSlug})` : ''}
+        </div>
         {p.hasResult && (
           <div className="banner">
             <span className="stat"><b>{t.steps}</b> steps</span>

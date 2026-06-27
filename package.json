@@ -2,7 +2,7 @@
   "name": "fuuz-vscode-extension",
   "displayName": "Fuuz for VS Code",
   "description": "VS Code extension for Fuuz application management with multi-tenant MCP support",
-  "version": "0.29.0",
+  "version": "0.33.0",
   "publisher": "cscott",
   "icon": "media/icon.png",
   "repository": {
@@ -113,6 +113,24 @@
         "icon": "$(verified)"
       },
       {
+        "command": "fuuz.checkFlowCompliance",
+        "title": "Check Flow Compliance",
+        "category": "Fuuz",
+        "icon": "$(verified)"
+      },
+      {
+        "command": "fuuz.checkAllFlows",
+        "title": "Check All Flows (shared queries/scripts)",
+        "category": "Fuuz",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "fuuz.checkTenant",
+        "title": "Audit Entire Tenant (models + flows)",
+        "category": "Fuuz",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "fuuz.qaScreen",
         "title": "QA this Screen",
         "category": "Fuuz",
@@ -188,6 +206,11 @@
         "title": "Register MCP Server with Claude",
         "category": "Fuuz",
         "icon": "$(robot)"
+      },
+      {
+        "command": "fuuz.fixClaudeMcpConflicts",
+        "title": "Fix Claude MCP Conflicts (.mcp.json shadowing)",
+        "category": "Fuuz"
       },
       {
         "command": "fuuz.generateContextDoc",
@@ -382,6 +405,11 @@
           "group": "navigation"
         },
         {
+          "command": "fuuz.checkTenant",
+          "when": "view == fuuzResourceTree",
+          "group": "navigation"
+        },
+        {
           "command": "fuuz.refreshQaRuns",
           "when": "view == fuuzQaRuns",
           "group": "navigation"
@@ -426,6 +454,11 @@
         {
           "command": "fuuz.qaScreen",
           "when": "view == fuuzResourceTree && viewItem == screen",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.checkFlowCompliance",
+          "when": "view == fuuzResourceTree && viewItem == flow",
           "group": "inline"
         },
         {

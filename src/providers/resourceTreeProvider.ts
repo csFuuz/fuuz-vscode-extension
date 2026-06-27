@@ -60,6 +60,15 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
       if (mcp?.systemDataModels?.length) {
         roots.push(node('System Data Models', 'sysModelsRoot', mcp.systemDataModels));
       }
+      if (mcp?.scripts?.length) {
+        roots.push(node('Scripts', 'scriptsRoot', mcp.scripts));
+      }
+      if (mcp?.queries?.length) {
+        roots.push(node('Queries', 'queriesRoot', mcp.queries));
+      }
+      if (mcp?.documents?.length) {
+        roots.push(node('Documents', 'documentsRoot', mcp.documents));
+      }
       if (mcp?.environment && Object.keys(mcp.environment).length) {
         roots.push(node('Environment', 'envRoot', mcp.environment));
       }
@@ -97,6 +106,18 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
 
     if (element.contextValue === 'sysModelsRoot') {
       return (element.node as any[]).map(dm => node(dm.name, 'datamodel', dm, dm.description));
+    }
+
+    if (element.contextValue === 'scriptsRoot') {
+      return (element.node as any[]).map(s => node(labelFor('script', s), 'script', s, descFor('script', s)));
+    }
+
+    if (element.contextValue === 'queriesRoot') {
+      return (element.node as any[]).map(q => node(labelFor('graphqlOp', q), 'graphqlOp', q, descFor('graphqlOp', q)));
+    }
+
+    if (element.contextValue === 'documentsRoot') {
+      return (element.node as any[]).map(d => node(labelFor('document', d), 'document', d, descFor('document', d)));
     }
 
     if (element.contextValue === 'toolsRoot') {
@@ -165,6 +186,7 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
 
 const COLLAPSIBLE = new Set([
   'moduleGroup', 'module', 'datamodel', 'category', 'flowGroup', 'envRoot', 'appRoot', 'sysModelsRoot', 'toolsRoot', 'issuesRoot',
+  'scriptsRoot', 'queriesRoot', 'documentsRoot',
 ]);
 
 /**
@@ -264,6 +286,9 @@ class ResourceItem extends vscode.TreeItem {
       appRoot: 'symbol-namespace',
       sysModelsRoot: 'database',
       toolsRoot: 'tools',
+      scriptsRoot: 'code',
+      queriesRoot: 'symbol-interface',
+      documentsRoot: 'files',
       moduleGroup: 'symbol-namespace',
       module: 'symbol-module',
       screen: 'symbol-class',

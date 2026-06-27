@@ -6,8 +6,8 @@ import { Persona, RunScope } from '../qa/runTypes';
 
 const personas: Persona[] = [{ name: 'Operator', role: 'shop floor' }, { name: 'Supervisor' }];
 const scope: RunScope = { kind: 'screen', name: 'Work Orders', model: 'WorkOrder' };
-const mk = (target = deriveTarget('build.mfgx'), destructive = true) =>
-  buildQaPlan({ runId: 'qa-1', createdAt: '2026-06-24T00:00:00Z', scope, target, personas, destructiveAllowed: destructive, runDir: '.fuuz/qa/tnt/qa-1' });
+const mk = (target = deriveTarget('build.mfgx'), destructive = true, authority: 'autonomous' | 'manual' = 'autonomous') =>
+  buildQaPlan({ runId: 'qa-1', createdAt: '2026-06-24T00:00:00Z', scope, target, personas, destructiveAllowed: destructive, authority, runDir: '.fuuz/qa/tnt/qa-1' });
 
 test('isLikelyTestEnv: test tokens true, prod tokens false', () => {
   assert.equal(isLikelyTestEnv('build.mfgx'), true);
@@ -35,6 +35,22 @@ test('buildQaPlan: omits destructive steps when not allowed', () => {
   const plan = mk(deriveTarget('build.mfgx'), false);
   assert.ok(!plan.steps.some(s => s.destructive));
   assert.ok(plan.steps.some(s => s.id === 'read')); // non-destructive steps remain
+});
+
+test('buildQaPlan: includes security probes; gates injection on destructive', () => {
+  const open = mk(deriveTarget('build.mfgx'), true);
+  assert.ok(open.securitySteps.some(s => s.id === 'sec-forced-browse'));
+  assert.ok(open.securitySteps.some(s => s.id === 'sec-xss')); // destructive, allowed
+  const ro = mk(deriveTarget('build.mfgx'), false);
+  assert.ok(ro.securitySteps.some(s => s.id === 'sec-forced-browse')); // read-only probe stays
+  assert.ok(!ro.securitySteps.some(s => s.id === 'sec-xss')); // injection probe gated out
+});
+
+test('planToBrief: reflects authority and renders security section', () => {
+  assert.match(planToBrief(mk(deriveTarget('build.mfgx'), true, 'autonomous')), /COMPLETE AUTHORITY/);
+  assert.match(planToBrief(mk(deriveTarget('build.mfgx'), true, 'manual')), /Manual — supervised/);
+  assert.match(planToBrief(mk()), /Security & RBAC probes/);
+  assert.match(planToBrief(mk()), /Forced browsing/);
 });
 
 test('planToBrief: renders target, personas, checklist and safety', () => {

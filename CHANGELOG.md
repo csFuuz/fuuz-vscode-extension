@@ -2,6 +2,63 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## 0.33.0
+
+- **Fix Claude /mcp auth errors from a shadowing project .mcp.json**: a project
+  `.mcp.json` registers Fuuz servers with **env-var token refs** (safe to commit),
+  but Claude Code gives project scope precedence over the embedded `~/.claude.json`
+  servers — so if the `FUUZ_TOKEN_*` vars aren't exported, those token-less entries
+  shadow the working ones and fail to authenticate.
+  - On activation the extension now **detects** this and offers to remove the
+    shadowing project entries (the embedded user-scoped servers keep working).
+  - New command **Fix Claude MCP Conflicts (.mcp.json shadowing)**.
+  - The extension's own access (resource tree, ERD, QA, etc.) and VS Code Copilot
+    are unaffected either way — they use SecretStorage + in-memory registration,
+    not `.mcp.json`.
+
+## 0.32.0
+
+- **Flow diagram compliance (Check Flow Compliance)**: analyzes a real deployed
+  flow's nodes over MCP and flags: branch/collect payload mismatches, missing
+  names/descriptions, scripts >100 lines (→ Saved Script), missing try/catch or
+  error-response nodes, **delay** nodes (warning), `$integrate` in scripts (→ use
+  an Integration node + Connection), **hard-coded credentials** (api key / token /
+  password / passphrase — flagged as a risk), and hard-coded URLs / stray console
+  logging. Broadcast nodes are surfaced. The node fetch discovers the
+  `DataFlowElement` fields at runtime so it adapts to the tenant's schema.
+- **Cross-flow checks (Check All Flows)**: finds the same query used across flows
+  (→ Saved Query) and duplicated scripts (→ Saved Script).
+- **Audit Entire Tenant**: runs model + flow compliance across the whole tenant
+  and shows a summary — overall score, a per-artifact scorecard (worst first), and
+  consolidated findings.
+
+## 0.31.0
+
+- **QA logs are bounded to the run**: log collection now uses the run window
+  (start = plan time, end = result.json mtime or now) **capped to 3h**, instead of
+  "createdAt → now" — so collecting days later no longer sweeps in unrelated logs.
+- **Dropped deploy-log noise**: removed `DataFlowDeploymentLog` (deploy-time
+  build logs like `addVersion`/version-validation) from QA collection; runtime
+  flow activity is already captured via `ApplicationSpanEventLog`. QA logs now =
+  span (runtime) + integration.
+- **Cleaner result header**: the QA result view no longer renders an empty
+  `( )` target when a run has no URL/environment.
+
+## 0.30.0
+
+- **Authority mode**: when starting a QA run you choose **Autonomous** (Claude
+  proceeds with full authority once each persona is logged in — launched with
+  per-action permission prompts bypassed) or **Manual** (supervised, confirms
+  each step). Fixes the "prompts me too much" friction.
+- **Security & RBAC probes**: every run now includes authorized front-end
+  security objectives — forced browsing to unauthorized screens, client-only RBAC
+  bypass, console/API probing, and (when destructive is enabled) XSS/injection —
+  to surface RBAC leaks where the UI hides what the server still permits.
+- **Artifacts stay with the run**: the brief now insists screenshots/GIFs and
+  result.json are written under `.fuuz/qa/<tenant>/<run>/artifacts` (never the
+  workspace root). Deleting a run already removes its entire directory — artifacts
+  included.
+
 ## 0.29.0
 
 - **Unified QA result view**: a new **Open QA Result** action on each run renders

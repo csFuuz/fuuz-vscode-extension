@@ -8,6 +8,7 @@ const launch = buildHeadedDriver({
   mcpConfigPath: '.fuuz/qa/qa-1/mcp.qa.json',
   artifactsPath: '.fuuz/qa/qa-1/artifacts',
   targetUrl: 'https://build.mfgx.fuuz.app',
+  autonomous: false,
 });
 
 test('buildHeadedDriver: wires the Playwright MCP with output + profile dirs', () => {
@@ -35,11 +36,23 @@ test('buildHeadedDriver: shell command puts the prompt before the variadic --mcp
   assert.ok(!launch.shellCommand.includes('"'), 'prompt should be single-quoted without inner double quotes');
 });
 
+test('buildHeadedDriver: manual omits permission bypass; autonomous adds it', () => {
+  assert.ok(!launch.shellCommand.includes('--permission-mode'), 'manual must not bypass permissions');
+  assert.match(launch.prompt, /STOP and ask me to log in/);
+  const auto = buildHeadedDriver({
+    runDirFsPath: '/work/.fuuz/qa/qa-1', briefPath: '.fuuz/qa/qa-1/brief.md',
+    mcpConfigPath: '.fuuz/qa/qa-1/mcp.qa.json', artifactsPath: '.fuuz/qa/qa-1/artifacts',
+    targetUrl: 'https://build.mfgx.fuuz.app', autonomous: true,
+  });
+  assert.match(auto.shellCommand, /--permission-mode bypassPermissions$/);
+  assert.match(auto.prompt, /COMPLETE AUTHORITY/);
+});
+
 test('buildHeadedDriver: optional Fuuz MCP uses an env-var token (never inline)', () => {
   const withFuuz = buildHeadedDriver({
     runDirFsPath: '/work/.fuuz/qa/qa-1',
     briefPath: '.fuuz/qa/qa-1/brief.md', mcpConfigPath: '.fuuz/qa/qa-1/mcp.qa.json', artifactsPath: '.fuuz/qa/qa-1/artifacts',
-    targetUrl: 'https://build.mfgx.fuuz.app',
+    targetUrl: 'https://build.mfgx.fuuz.app', autonomous: false,
     fuuz: { url: 'https://api.build.mfgx.fuuz.app/mcp', tenantId: 'tnt-1', tokenEnvVar: 'FUUZ_QA_TOKEN' },
   });
   const fuuz = withFuuz.mcpConfig.mcpServers.fuuz as { type: string; url: string; headers: Record<string, string> };
