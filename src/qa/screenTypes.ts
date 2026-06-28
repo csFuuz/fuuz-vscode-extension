@@ -12,6 +12,10 @@ export interface ScreenElementNode {
   label?: string;
   /** A transform expression attached directly to this element, if any. */
   transform?: string;
+  /** Data model this element binds to (Form/Table), if any. */
+  model?: string;
+  /** Whether the element's query carries a where/filter (Form/Table). */
+  hasFilter?: boolean;
   /** Approximate serialized size of this element's configuration (chars). */
   configSize: number;
 }

@@ -2,7 +2,7 @@
   "name": "fuuz-vscode-extension",
   "displayName": "Fuuz for VS Code",
   "description": "VS Code extension for Fuuz application management with multi-tenant MCP support",
-  "version": "0.36.0",
+  "version": "0.37.0",
   "publisher": "cscott",
   "icon": "media/icon.png",
   "repository": {

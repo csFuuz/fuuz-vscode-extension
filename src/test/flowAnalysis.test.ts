@@ -151,3 +151,36 @@ test('cross-flow: repeated query + script suggest saved query/script', () => {
 test('normalizeScript: comments + whitespace ignored', () => {
   assert.equal(normalizeScript('a();   // x\n/* y */ b();'), 'a(); b();');
 });
+
+test('mutexLock without a matching mutexUnlock is flagged', () => {
+  const bad = flow([node({ id: 'l', kind: 'other', rawType: 'mutexLock', name: 'Lock' })]);
+  assert.ok(ruleOf(bad, 'flow-mutex-balance').findings.some(x => x.severity === 'warn' && /unreleased|left/.test(x.message)));
+  const ok = flow([node({ id: 'l', kind: 'other', rawType: 'mutexLock', name: 'Lock' }), node({ id: 'u', kind: 'other', rawType: 'mutexUnlock', name: 'Unlock' })]);
+  assert.equal(ruleOf(ok, 'flow-mutex-balance').findings.length, 0);
+});
+
+test('multi-write flow without a try/catch boundary is flagged', () => {
+  const bad = flow([node({ id: 'm1', kind: 'mutate', name: 'Write A' }), node({ id: 'm2', kind: 'mutate', name: 'Write B' })]);
+  assert.ok(ruleOf(bad, 'flow-transaction-boundary').findings.some(x => x.severity === 'warn'));
+  const ok = flow([node({ id: 't', kind: 'tryCatch', name: 'Try' }), node({ id: 'm1', kind: 'mutate', name: 'Write A' }), node({ id: 'm2', kind: 'mutate', name: 'Write B' })]);
+  assert.equal(ruleOf(ok, 'flow-transaction-boundary').findings.length, 0);
+});
+
+test('references to a deprecated saved transform are flagged', () => {
+  const ctx: FlowAnalysisContext = { savedTransforms: new Map([['old', { id: 'old', name: 'Legacy', deprecated: true }]]) };
+  const f = flow([node({ id: 'n', kind: 'savedTransform', name: 'Calc', requestTransform: '$ctx', savedRef: { id: 'old', name: 'Legacy' } })]);
+  assert.ok(ruleOf(f, 'flow-deprecated-ref', ctx).findings.some(x => /deprecated/.test(x.message)));
+});
+
+test('building create payloads in a script is flagged as an import risk', () => {
+  const f = flow([
+    node({ id: 's', kind: 'inlineScript', name: 'Build payloads', script: 'var out = []; out.push({ create: { id: 1, name: "x" } }); return { payload: out };' }),
+    node({ id: 'm', kind: 'mutate', name: 'Mutate all' }),
+  ]);
+  assert.ok(ruleOf(f, 'flow-create-in-script').findings.some(x => x.severity === 'warn' && /data-import\/integration risk/.test(x.message)));
+});
+
+test('error-handling flow without a response node gets a standardization hint', () => {
+  const f = flow([node({ id: 't', kind: 'throwError', name: 'Throw' })]);
+  assert.ok(ruleOf(f, 'flow-error-response').findings.some(x => x.severity === 'info'));
+});

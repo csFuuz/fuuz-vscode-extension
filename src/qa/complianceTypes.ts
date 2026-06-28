@@ -37,6 +37,10 @@ export interface DataModelDescriptor {
   name: string;
   fields: FieldDescriptor[];
   relations: RelationDescriptor[];
+  /** master | setup | transactional (when known) — drives type-aware rules. */
+  modelType?: string;
+  /** Estimated record count (when known) — drives indexing/perf rules. */
+  recordCount?: number;
 }
 
 /** Generic descriptor for kinds whose profiles are not yet fully modeled. */

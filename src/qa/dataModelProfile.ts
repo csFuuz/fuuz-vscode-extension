@@ -11,7 +11,7 @@
  * Each rule reports how many assertions it ran and how many passed, so the
  * overall score is an explainable "share of checks passed".
  */
-import { DataModelDescriptor, Finding, Rule, RuleResult } from './complianceTypes';
+import { DataModelDescriptor, FieldDescriptor, Finding, Rule, RuleResult } from './complianceTypes';
 import { SCALAR_TYPES, baseType } from '../util/fuuzParse';
 
 const CAMEL = /^[a-z][A-Za-z0-9]*$/;
@@ -138,6 +138,104 @@ const fieldDescriptions: Rule<DataModelDescriptor> = d => {
   return result('field-descriptions', 'Fields have descriptions', described.length, passed, findings);
 };
 
+// --- Type-aware rules (only run when `modelType` is known) -------------
+
+/** Word/suffix pattern shared by setup-type heuristics (Status/Type/Group/…). */
+const SETUP_WORD = /(Status|Type|Group|Category|State)/;
+const SETUP_TARGET = /(Status|Type|Group|Category|State)$/;
+
+/** True when a field is an active flag (`active`/`isActive`, base type Boolean). */
+const isActiveField = (f: FieldDescriptor) =>
+  (f.name === 'active' || f.name === 'isActive') && base(f.type) === 'Boolean';
+
+/**
+ * Setup models classify other records, so they carry the standard trio:
+ * a `color`, an active flag, and a `code`. (`id` should equal `code`, both
+ * immutable — surfaced as info when `code` is present.)
+ */
+const setupRequiredFields: Rule<DataModelDescriptor> = d => {
+  if (d.modelType !== 'setup') return result('setup-required-fields', 'Setup model carries color/active/code', 0, 0, []);
+  const findings: Finding[] = [];
+  let passed = 0;
+
+  const hasColor = d.fields.some(f => f.name === 'color');
+  if (hasColor) passed++;
+  else findings.push({ ruleId: 'setup-required-fields', severity: 'warn', message: 'Setup model is missing a `color` field', where: 'color', fix: 'Add `color: String` so the value renders with a swatch.' });
+
+  const hasActive = d.fields.some(isActiveField);
+  if (hasActive) passed++;
+  else findings.push({ ruleId: 'setup-required-fields', severity: 'warn', message: 'Setup model is missing an `active`/`isActive` Boolean flag', where: 'active', fix: 'Add `active: Boolean!` (default true) for soft enable/disable.' });
+
+  const hasCode = d.fields.some(f => f.name === 'code');
+  if (hasCode) {
+    passed++;
+    findings.push({ ruleId: 'setup-required-fields', severity: 'info', message: 'Setup model has `code` — `id` should equal `code` and both should be immutable', where: 'code', fix: 'Make `id` mirror `code` and keep both read-only after creation.' });
+  } else {
+    findings.push({ ruleId: 'setup-required-fields', severity: 'warn', message: 'Setup model is missing a `code` field', where: 'code', fix: 'Add a stable `code: String!` (equal to `id`, immutable).' });
+  }
+
+  return result('setup-required-fields', 'Setup model carries color/active/code', 3, passed, findings);
+};
+
+/** A non-setup model named like a setup type (Status/Type/Group/…) is suspicious. */
+const modelNameImpliesSetup: Rule<DataModelDescriptor> = d => {
+  if (!d.modelType || d.modelType === 'setup') return result('model-name-implies-setup', 'Setup-like name matches a setup type', 0, 0, []);
+  if (!SETUP_WORD.test(d.name)) return result('model-name-implies-setup', 'Setup-like name matches a setup type', 1, 1, []);
+  return result('model-name-implies-setup', 'Setup-like name matches a setup type', 1, 0, [{
+    ruleId: 'model-name-implies-setup', severity: 'warn',
+    message: `Model name \`${d.name}\` implies a setup type but this is a ${d.modelType} model — rename it or change its type.`,
+    fix: 'Rename the model or set its type to `setup`.',
+  }]);
+};
+
+/** Master/transactional models classify against at least one setup type. */
+const setupReferences: Rule<DataModelDescriptor> = d => {
+  if (d.modelType !== 'master' && d.modelType !== 'transactional') return result('setup-references', 'References a standard setup type', 0, 0, []);
+  const ok = d.relations.some(r => SETUP_TARGET.test(r.target));
+  return result('setup-references', 'References a standard setup type', 1, ok ? 1 : 0, ok ? [] : [{
+    ruleId: 'setup-references', severity: 'info',
+    message: 'No reference to a standard setup type (status/type/group/category) — most transactional/master models classify against one.',
+    fix: 'Relate this model to a setup type (e.g. a `*Status` or `*Type`).',
+  }]);
+};
+
+/** Master/transactional models prefer soft state (status/active) over hard delete. */
+const statusOrActive: Rule<DataModelDescriptor> = d => {
+  if (d.modelType !== 'master' && d.modelType !== 'transactional') return result('status-or-active', 'Has a status relation or active flag', 0, 0, []);
+  const hasActive = d.fields.some(isActiveField);
+  const hasStatus = d.relations.some(r => /status$/i.test(r.field) || /status$/i.test(r.target));
+  const ok = hasActive || hasStatus;
+  return result('status-or-active', 'Has a status relation or active flag', 1, ok ? 1 : 0, ok ? [] : [{
+    ruleId: 'status-or-active', severity: 'info',
+    message: 'No `status` relation or `active`/`isActive` flag — prefer a status/isActive over hard deletes (traceability).',
+    fix: 'Add a `*Status` relation or an `active`/`isActive: Boolean` flag.',
+  }]);
+};
+
+const MEASURE_NAME = /(quantity|qty|weight|length|width|height|depth|volume|temperature|pressure|rate|amount|mass|level|capacity|speed|flow|density|thickness|diameter)/i;
+const BARE_NUMBER = new Set(['Int', 'Float', 'Decimal', 'BigInt', 'Long']);
+
+/** Measurement fields carry an explicit unit (Measure/Ratio scalar or a Unit reference). */
+const uomOnMeasures: Rule<DataModelDescriptor> = d => {
+  // Only bare-number measurement fields need a unit; Measure/Ratio/Duration are fine.
+  const measures = d.fields.filter(f => MEASURE_NAME.test(f.name) && BARE_NUMBER.has(base(f.type)));
+  if (measures.length === 0) return result('uom-on-measures', 'Measurements carry an explicit unit', 0, 0, []);
+  const fieldNames = new Set(d.fields.map(f => f.name));
+  const hasUnitRelation = d.relations.some(r => r.field === 'Unit' || r.target === 'Unit' || /unit/i.test(r.field) || /unit/i.test(r.target));
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const f of measures) {
+    const hasSiblingUnit = fieldNames.has(`${f.name}Unit`) || fieldNames.has(`${f.name}UnitId`);
+    if (hasSiblingUnit || hasUnitRelation) passed++;
+    else findings.push({
+      ruleId: 'uom-on-measures', severity: 'info',
+      message: `Measurement field \`${f.name}\` is a bare number — use the \`Measure\` or \`Ratio\` scalar, or relate it to the system \`Unit\` model, so units are explicit.`,
+      where: f.name, fix: `Type \`${f.name}\` as \`Measure\`/\`Ratio\`, or add \`${f.name}UnitId\` linked to the system \`Unit\` model.`,
+    });
+  }
+  return result('uom-on-measures', 'Measurements carry an explicit unit', measures.length, passed, findings);
+};
+
 /** The ordered data-model profile. */
 export const DATA_MODEL_RULES: Rule<DataModelDescriptor>[] = [
   idPrimaryKey,
@@ -148,4 +246,9 @@ export const DATA_MODEL_RULES: Rule<DataModelDescriptor>[] = [
   listRelationShape,
   activeFlag,
   fieldDescriptions,
+  setupRequiredFields,
+  modelNameImpliesSetup,
+  setupReferences,
+  statusOrActive,
+  uomOnMeasures,
 ];

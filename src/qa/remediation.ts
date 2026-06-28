@@ -101,12 +101,22 @@ function flowSections(graph: FlowGraph, report: ComplianceReport): string {
   const integrate = byRule(report, 'flow-integrate-in-script');
   const creds = byRule(report, 'flow-credentials');
   const errors = byRule(report, 'flow-error-handling');
-  if (integrate.length || creds.length || errors.length) {
+  const deprecated = byRule(report, 'flow-deprecated-ref');
+  const createScript = byRule(report, 'flow-create-in-script');
+  const mutex = byRule(report, 'flow-mutex-balance');
+  const txn = byRule(report, 'flow-transaction-boundary');
+  const errResp = byRule(report, 'flow-error-response');
+  if (integrate.length || creds.length || errors.length || deprecated.length || createScript.length || mutex.length || txn.length || errResp.length) {
     const lines: string[] = [];
     for (const f of creds) lines.push(`- 🔴 **Credential risk** \`${f.targetId ?? ''}\` — ${f.where ?? ''}: move the secret to a Connection.`);
     for (const f of integrate) lines.push(`- 🔴 \`${f.targetId ?? ''}\` — ${f.where ?? ''}: replace in-script \`$integrate\` with an HTTP node + Connection.`);
+    for (const f of createScript) lines.push(`- ⚠️ \`${f.targetId ?? ''}\` — ${f.message}: move creation defaults to triggers / a data-change-triggered flow.`);
+    for (const f of deprecated) lines.push(`- ⚠️ \`${f.targetId ?? ''}\` — ${f.message}: repoint to the current saved transform.`);
+    for (const f of mutex) lines.push(`- ⚠️ ${f.message}: balance every mutexLock with a mutexUnlock on all paths.`);
+    for (const f of txn) lines.push(`- ⚠️ ${f.message}: wrap the writes in a Try/Catch (+ mutex if atomic).`);
     for (const f of errors) lines.push(`- ⚠️ ${f.message}: add a Try/Catch node and an error response.`);
-    out.push(`### Reliability & security\n\n${lines.join('\n')}`);
+    for (const f of errResp) lines.push(`- ℹ️ ${f.message}: return a consistent error envelope from a response node.`);
+    out.push(`### Reliability & integration\n\n${lines.join('\n')}`);
   }
 
   const vNotes = byRule(report, 'flow-version-notes');

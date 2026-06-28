@@ -541,11 +541,15 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     const buildReport = async (signal?: AbortSignal): Promise<ComplianceReport | undefined> => {
       const graph = await resourceService.getModelGraph(tenant, model, service, signal);
       if (!graph) return undefined;
+      const ctx = await buildFlowContext(resourceService, tenant, signal);
+      const info = ctx.models?.get(graph.name) ?? ctx.models?.get(model);
       const descriptor: DataModelDescriptor = {
         kind: 'dataModel',
         name: graph.name,
         fields: graph.fields.map(f => ({ name: f.name, type: f.type })),
         relations: graph.relations.map(r => ({ field: r.field, target: r.target, many: r.many })),
+        modelType: info?.type,
+        recordCount: info?.recordCount,
       };
       return runCompliance(descriptor);
     };
@@ -647,7 +651,8 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
         vscode.window.showWarningMessage("Fuuz: couldn't read this screen's elements over MCP (ScreenElement). Confirm the tenant connection and try again.");
         return;
       }
-      const report = runScreenCompliance(model);
+      const ctx = await buildFlowContext(resourceService, tenant, signal);
+      const report = runScreenCompliance(model, ctx.models);
       ReportPanel.show(context, report);
       const msg = `Fuuz: ${screen.name} — ${report.score}% (${report.passed}/${report.checks} checks, ${model.elements.length} elements).`;
       if (report.score >= 90) vscode.window.showInformationMessage(msg);
@@ -717,10 +722,13 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
         if (signal?.aborted) return;
         const graph = await resourceService.getModelGraph(tenant, name, 'application', signal).catch(() => null);
         if (!graph) continue;
+        const info = ctx.models?.get(graph.name) ?? ctx.models?.get(name);
         const descriptor: DataModelDescriptor = {
           kind: 'dataModel', name: graph.name,
           fields: graph.fields.map(f => ({ name: f.name, type: f.type })),
           relations: graph.relations.map(r => ({ field: r.field, target: r.target, many: r.many })),
+          modelType: info?.type,
+          recordCount: info?.recordCount,
         };
         reports.push(runCompliance(descriptor));
       }
@@ -732,7 +740,7 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       for (const s of screens.slice(0, SCREEN_CAP)) {
         if (signal?.aborted) return;
         const m = await fetchScreenModel(resourceService, tenant, s, signal).catch(() => null);
-        if (m) reports.push(runScreenCompliance(m));
+        if (m) reports.push(runScreenCompliance(m, ctx.models));
       }
       if (flowGraphs.length > 1) reports.push(analyzeFlowsCrossCutting(flowGraphs));
 
@@ -795,7 +803,7 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       for (const s of screens.slice(0, SCREEN_CAP)) {
         if (signal?.aborted) return;
         const m = await fetchScreenModel(resourceService, tenant, s, signal).catch(() => null);
-        if (m) screenReports.push(runScreenCompliance(m));
+        if (m) screenReports.push(runScreenCompliance(m, ctx.models));
       }
       const cross = graphs.length > 1 ? analyzeFlowsCrossCutting(graphs) : undefined;
       const md = buildTenantFixPlan(tenant.name, { flows: flowInputs, cross, screens: screenReports });

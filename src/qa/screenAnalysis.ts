@@ -9,6 +9,7 @@
  */
 import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER } from './complianceTypes';
 import { ScreenElementNode, ScreenModel } from './screenTypes';
+import { ModelInfo } from './flowTypes';
 import { judgeName } from './naming';
 
 const rule = (ruleId: string, title: string, checks: number, passed: number, findings: Finding[]): RuleResult =>
@@ -29,6 +30,7 @@ const FIELD_TYPES = new Set([
 const MAX_ACTION_BUTTONS = 5;
 const MAX_ELEMENTS = 75;
 const MAX_CONFIG_SIZE = 60_000;
+const LARGE_RECORD_COUNT = 5000;
 
 /** Too many action buttons crowd a screen — consolidate into menus/rows. */
 function actionButtons(m: ScreenModel): RuleResult {
@@ -99,6 +101,35 @@ function fieldTransforms(m: ScreenModel): RuleResult {
   return rule('screen-field-transforms', 'Fields avoid inline transforms', fields.length || 1, fields.length ? passed : 1, findings);
 }
 
+/** No `$integrate` in screen element transforms — use a Connection + integration flow. */
+function screenIntegrate(m: ScreenModel): RuleResult {
+  const withTransforms = m.elements.filter(e => e.transform);
+  if (!withTransforms.length) return rule('screen-integrate', 'No $integrate in screen transforms', 0, 0, []);
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const e of withTransforms) {
+    if (/\$integrate\b/.test(e.transform!)) findings.push({ ruleId: 'screen-integrate', severity: 'error', where: where(e), message: `Element "${where(e)}" transform calls $integrate`, fix: 'Replace the in-transform $integrate with a Connection + integration flow.' });
+    else passed++;
+  }
+  return rule('screen-integrate', 'No $integrate in screen transforms', withTransforms.length, passed, findings);
+}
+
+/** Data-bound elements on large transactional models should filter server-side. */
+function bigTableBinding(m: ScreenModel, models?: Map<string, ModelInfo>): RuleResult {
+  const bound = m.elements.filter(e => e.model);
+  if (!bound.length || !models) return rule('screen-perf-binding', 'Large tables are filtered server-side', 0, 0, []);
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const e of bound) {
+    const info = models.get(e.model!) ?? models.get(e.model![0].toUpperCase() + e.model!.slice(1));
+    const large = info && info.type !== 'setup' && (info.recordCount ?? 0) > LARGE_RECORD_COUNT;
+    if (large && !e.hasFilter) {
+      findings.push({ ruleId: 'screen-perf-binding', severity: 'warn', where: where(e), message: `"${where(e)}" binds ${e.model} (~${info!.recordCount} records) with no server-side filter`, fix: 'Add a where/filter to the element query (e.g. a recent window or required scope) so it does not load the whole table.' });
+    } else passed++;
+  }
+  return rule('screen-perf-binding', 'Large tables are filtered server-side', bound.length, passed, findings);
+}
+
 /** Screen has a meaningful (non-placeholder) name. */
 function naming(m: ScreenModel): RuleResult {
   const verdict = judgeName(m.name, 'Screen');
@@ -123,14 +154,16 @@ function versionNotes(m: ScreenModel): RuleResult {
     }]);
 }
 
-/** All screen rules. */
-export function analyzeScreen(m: ScreenModel): RuleResult[] {
+/** All screen rules. `models` (optional) enables the big-table-binding perf check. */
+export function analyzeScreen(m: ScreenModel, models?: Map<string, ModelInfo>): RuleResult[] {
   return [
     actionButtons(m),
     elementCount(m),
     configSize(m),
     columnTransforms(m),
     fieldTransforms(m),
+    screenIntegrate(m),
+    bigTableBinding(m, models),
     naming(m),
     versionNotes(m),
   ];
@@ -143,6 +176,6 @@ function toReport(name: string, rules: RuleResult[]): ComplianceReport {
   return { kind: 'screen', name, score: checks === 0 ? 100 : Math.round((passed / checks) * 100), checks, passed, rules, findings };
 }
 
-export function runScreenCompliance(m: ScreenModel): ComplianceReport {
-  return toReport(m.name, analyzeScreen(m));
+export function runScreenCompliance(m: ScreenModel, models?: Map<string, ModelInfo>): ComplianceReport {
+  return toReport(m.name, analyzeScreen(m, models));
 }

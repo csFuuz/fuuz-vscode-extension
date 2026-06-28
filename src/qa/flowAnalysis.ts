@@ -367,6 +367,72 @@ function scriptAntiPatterns(g: FlowGraph): RuleResult {
   return rule('flow-script-antipatterns', 'Scripts avoid hard-coded URLs / stray logging', checks || 1, checks ? passed : 1, findings);
 }
 
+/** Every mutexLock must have a matching mutexUnlock (else the flow can deadlock). */
+function mutexBalance(g: FlowGraph): RuleResult {
+  const locks = g.nodes.filter(n => n.rawType === 'mutexLock');
+  const unlocks = g.nodes.filter(n => n.rawType === 'mutexUnlock');
+  if (!locks.length && !unlocks.length) return rule('flow-mutex-balance', 'Mutex locks are balanced', 0, 0, []);
+  const findings: Finding[] = [];
+  if (locks.length > unlocks.length) {
+    findings.push({ ruleId: 'flow-mutex-balance', severity: 'warn', message: `${locks.length} mutexLock but only ${unlocks.length} mutexUnlock — a lock left unreleased can stall the flow`, fix: 'Ensure every mutexLock has a matching mutexUnlock on ALL paths, including error / try-catch branches.' });
+  } else if (unlocks.length > locks.length) {
+    findings.push({ ruleId: 'flow-mutex-balance', severity: 'info', message: `${unlocks.length} mutexUnlock but only ${locks.length} mutexLock`, fix: 'Remove the extra unlock or add the matching lock.' });
+  }
+  return rule('flow-mutex-balance', 'Mutex locks are balanced', 1, findings.length ? 0 : 1, findings);
+}
+
+/** Multi-write flows should wrap their mutations in a transaction boundary. */
+function transactionBoundary(g: FlowGraph): RuleResult {
+  const mutates = byKind(g, 'mutate');
+  if (mutates.length < 2) return rule('flow-transaction-boundary', 'Multi-write flows have a transaction boundary', 0, 0, []);
+  const guarded = byKind(g, 'tryCatch').length > 0;
+  return rule('flow-transaction-boundary', 'Multi-write flows have a transaction boundary', 1, guarded ? 1 : 0,
+    guarded ? [] : [{ ruleId: 'flow-transaction-boundary', severity: 'warn', message: `Flow has ${mutates.length} mutation nodes but no Try/Catch boundary — a mid-flow failure can leave partial writes`, fix: 'Wrap the writes in a Try/Catch (and a mutex if they must be atomic) and return an error response on failure.' }]);
+}
+
+/** Saved-transform references should not point at a deprecated transform. */
+function deprecatedRefs(g: FlowGraph, ctx?: FlowAnalysisContext): RuleResult {
+  const saved = byKind(g, 'savedTransform');
+  if (!saved.length || !ctx?.savedTransforms) return rule('flow-deprecated-ref', 'No deprecated saved-transform references', 0, 0, []);
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const n of saved) {
+    const info = n.savedRef?.id ? ctx.savedTransforms.get(n.savedRef.id) : undefined;
+    if (info?.deprecated) findings.push({ ruleId: 'flow-deprecated-ref', severity: 'warn', where: where(n), targetId: n.id, message: `Node "${where(n)}" references a deprecated saved transform "${n.savedRef?.name ?? n.savedRef?.id}"`, fix: 'Point this at the current saved transform (or its replacement) and redeploy.' });
+    else passed++;
+  }
+  return rule('flow-deprecated-ref', 'No deprecated saved-transform references', saved.length, passed, findings);
+}
+
+/**
+ * Building `create` mutation payloads (setting field values) in a script is a
+ * data-import/integration risk — it bypasses trigger defaults and data-change
+ * rules. Prefer defaults in triggers, or data-change-triggered flows.
+ */
+function createInScript(g: FlowGraph): RuleResult {
+  const mutates = byKind(g, 'mutate');
+  if (!mutates.length) return rule('flow-create-in-script', 'Create values come from triggers, not scripts', 0, 0, []);
+  const ss = byKind(g, 'inlineScript').filter(n => typeof n.script === 'string');
+  if (!ss.length) return rule('flow-create-in-script', 'Create values come from triggers, not scripts', 1, 1, []);
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const n of ss) {
+    if (/\bcreate\s*:|\bwrapCreate\b|\{\s*create\b/.test(n.script!)) {
+      findings.push({ ruleId: 'flow-create-in-script', severity: 'warn', where: where(n), targetId: n.id, message: `Script "${where(n)}" builds create payloads with field values — data-import/integration risk`, fix: 'Set creation defaults in the data model’s triggers (or use data-change-triggered flows) so imports/integrations cannot bypass them.' });
+    } else passed++;
+  }
+  return rule('flow-create-in-script', 'Create values come from triggers, not scripts', ss.length, passed, findings);
+}
+
+/** Flows that error should return a standardized error response (consistent envelope). */
+function errorResponseShape(g: FlowGraph): RuleResult {
+  const errs = byKind(g, 'throwError').length > 0 || byKind(g, 'tryCatch').length > 0;
+  if (!errs) return rule('flow-error-response', 'Returns a standardized error response', 0, 0, []);
+  const hasResponse = byKind(g, 'response').length > 0;
+  return rule('flow-error-response', 'Returns a standardized error response', 1, hasResponse ? 1 : 0,
+    hasResponse ? [] : [{ ruleId: 'flow-error-response', severity: 'info', message: 'Flow throws/catches errors but has no response node returning a structured error', fix: 'Return a consistent error envelope (e.g. { success:false, code, message }) from a response node.' }]);
+}
+
 /** Flow name is clear (not a placeholder / ambiguous). */
 function flowNaming(g: FlowGraph): RuleResult {
   const v = judgeName(g.name, 'Flow');
@@ -402,6 +468,11 @@ export function analyzeFlow(g: FlowGraph, ctx?: FlowAnalysisContext): RuleResult
     integrateInScript(g),
     credentialsInScript(g),
     scriptAntiPatterns(g),
+    mutexBalance(g),
+    transactionBoundary(g),
+    deprecatedRefs(g, ctx),
+    createInScript(g),
+    errorResponseShape(g),
     flowNaming(g),
     versionNotes(g),
   ];

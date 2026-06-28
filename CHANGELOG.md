@@ -2,6 +2,31 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## 0.37.0
+
+Industrial best-practice checks across data models, flows and screens (type-aware,
+cross-referenced against the live tenant; all suggestions flow into the Fix Plan).
+
+- **Data models** (when the model type is known):
+  - *Setup* models should have `color`, an `active`/`isActive` flag, and a `code` (with `id == code`, both immutable).
+  - *Master/Transactional* models should reference a standard setup type (status/type/group/category) and carry a `status`/`isActive` (prefer soft-state over hard delete).
+  - A model **named** like a setup type (…Status/Type/Group/Category/State) that isn't a setup model is flagged.
+  - **Units of measure**: bare-number measurement fields should use the `Measure`/`Ratio` scalar or relate to the system `Unit` model.
+- **Flows**:
+  - Every `mutexLock` must have a matching `mutexUnlock` (deadlock guard).
+  - Multi-write flows need a Try/Catch **transaction boundary**.
+  - **Create-in-script** mutation values flagged as a data-import/integration risk (set defaults in triggers / data-change flows).
+  - References to **deprecated** saved transforms flagged.
+  - Error-handling flows should return a **standardized error response**.
+- **Screens**:
+  - `$integrate` in any screen element transform → use a Connection + integration flow.
+  - A Form/Table bound to a **large transactional model with no server-side filter** is flagged for perf.
+- **Duration** stays a composite scalar (from 0.36) and is never flagged as a missing-unit measure.
+
+_Deferred pending live schema confirmation_: data-change-capture retention/disable rules
+(history/telemetry), composite-index suggestions via the model trigger, app "no roles configured",
+and deployment hygiene — these need exact Fuuz field names verified over MCP before shipping.
+
 ## 0.36.0
 
 - **AI-assisted remediation — "Generate Fix Plan (Claude)"**: turn compliance findings

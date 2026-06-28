@@ -98,3 +98,33 @@ test('runScreenCompliance returns kind screen and a 0-100 score', () => {
   assert.equal(rep.kind, 'screen');
   assert.ok(rep.score >= 0 && rep.score <= 100);
 });
+
+test('screen-integrate flags $integrate in a screen element transform', () => {
+  const rows = [
+    { id: 'f1', type: 'TableColumn', name: 'Bad', configuration: { transform: 'var r = $integrate("erp", x); return r;' } },
+    { id: 'f2', type: 'TableColumn', name: 'Good', configuration: { transform: 'x.code' } },
+  ];
+  const r = analyzeScreen(buildScreenModel('S', rows)).find(x => x.ruleId === 'screen-integrate')!;
+  assert.ok(r.findings.some(f => f.severity === 'error' && /\$integrate/.test(f.message)));
+});
+
+test('screen-perf-binding flags a large transactional binding without a filter', () => {
+  const models = new Map([
+    ['WorkOrder', { name: 'WorkOrder', type: 'transactional', recordCount: 900000 }],
+    ['OrderStatus', { name: 'OrderStatus', type: 'setup', recordCount: 6 }],
+  ]);
+  const big = buildScreenModel('S', [
+    { id: 't1', type: 'Table', name: 'All WOs', configuration: { query: { model: 'WorkOrder', parameters: '{ "first": 100 }' } } },
+  ]);
+  assert.ok(analyzeScreen(big, models).find(r => r.ruleId === 'screen-perf-binding')!.findings.some(f => f.severity === 'warn'));
+
+  const filtered = buildScreenModel('S', [
+    { id: 't1', type: 'Table', name: 'My WOs', configuration: { query: { model: 'WorkOrder', parameters: '{ "filter": { "status": { "_eq": "open" } }, "first": 50 }' } } },
+  ]);
+  assert.equal(analyzeScreen(filtered, models).find(r => r.ruleId === 'screen-perf-binding')!.findings.length, 0);
+
+  const setup = buildScreenModel('S', [
+    { id: 't1', type: 'Table', name: 'Statuses', configuration: { query: { model: 'OrderStatus' } } },
+  ]);
+  assert.equal(analyzeScreen(setup, models).find(r => r.ruleId === 'screen-perf-binding')!.findings.length, 0);
+});

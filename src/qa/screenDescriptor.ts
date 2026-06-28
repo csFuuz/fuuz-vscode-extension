@@ -27,6 +27,26 @@ function extractTransform(type: string, configuration: any): string | undefined 
   return undefined;
 }
 
+/** Element types that bind a data model via a query (Form/Table). */
+const DATA_BOUND = new Set(['Form', 'Table']);
+
+/** The data model an element binds to, if any. */
+function boundModel(type: string, configuration: any): string | undefined {
+  if (!DATA_BOUND.has(type) || !configuration || typeof configuration !== 'object') return undefined;
+  return nonEmpty(configuration.query?.model);
+}
+
+/** Whether a Form/Table query carries a non-empty filter (parameters.filter or a where). */
+function queryHasFilter(type: string, configuration: any): boolean | undefined {
+  if (!DATA_BOUND.has(type) || !configuration || typeof configuration !== 'object') return undefined;
+  const q = configuration.query;
+  if (!q || typeof q !== 'object') return undefined;
+  let params: any = q.parameters;
+  if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = undefined; } }
+  const filter = params?.filter ?? params?.where ?? q.where;
+  return !!filter && typeof filter === 'object' && Object.keys(filter).length > 0;
+}
+
 /** Approximate serialized size of a configuration blob (chars); 0 on failure. */
 function sizeOf(configuration: unknown): number {
   try {
@@ -50,6 +70,8 @@ export function buildScreenModel(
       componentName: row?.componentName ?? undefined,
       label: row?.label ?? undefined,
       transform: extractTransform(type, row?.configuration),
+      model: boundModel(type, row?.configuration),
+      hasFilter: queryHasFilter(type, row?.configuration),
       configSize: sizeOf(row?.configuration),
     };
   });
