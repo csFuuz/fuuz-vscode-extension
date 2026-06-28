@@ -2,6 +2,26 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## 0.36.0
+
+- **AI-assisted remediation — "Generate Fix Plan (Claude)"**: turn compliance findings
+  into an actionable, Claude-ready Markdown brief that you review/accept, then run with
+  Claude Code, which applies the changes via the Fuuz MCP. The extension never mutates the
+  tenant itself. Available per-flow (tree context menu) and per-tenant (command palette).
+  The plan groups work into concrete steps with **node ids**, **heuristic name suggestions**
+  (Claude refines), and the exact `system_*` mutation tools to use — renames, descriptions,
+  extracting long/duplicated scripts to Saved Scripts, similar queries to Saved Queries,
+  adding payload-contract (`validate`) nodes, scoping/paginating queries, `$integrate`→http,
+  credential fixes, and release-notes — then redeploy.
+- **Highly-similar (not just identical) cross-flow detection**: scripts and queries embedded
+  across flows are now clustered by token-shingle similarity (≈80%+), so near-duplicates that
+  drifted apart are still surfaced for extraction into Saved Scripts / Saved Queries.
+- **Heuristic naming suggestions** seeded into findings (e.g. a query on `productionRun` →
+  "Query Production Run"; a script's jsdoc title → its name) and carried into the fix plan.
+- **Long-script threshold raised to 300 lines** before suggesting extraction to a Saved Script.
+- **Duration is a scalar**: `Duration` (`{ milliseconds, text }`, text ISO) is no longer treated
+  as a relation in the ERD or schema compliance — no phantom edge / FK requirement.
+
 ## 0.35.0
 
 - **View saved script/query content from the tree**: click a Script or Query in the

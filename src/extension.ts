@@ -30,6 +30,7 @@ import { buildModelIndex, buildSavedTransformIndex } from './qa/modelContext';
 import { decodeTronPayload } from './util/tron';
 import { runScreenCompliance } from './qa/screenAnalysis';
 import { buildScreenModel } from './qa/screenDescriptor';
+import { buildFlowFixPlan, buildTenantFixPlan, type FlowFixInput } from './qa/remediation';
 import { runTenantAudit } from './qa/tenantAudit';
 import { scaffoldFor } from './qa/scaffolds';
 import { parseOutline, kindFromFileName, OutlineParseError } from './qa/outline';
@@ -747,6 +748,61 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     });
   });
 
+  // Fix plan (one flow): findings → Claude-ready remediation brief.
+  register('fuuz.generateFlowFixPlan', async (arg?: unknown) => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const node = nodeArg(arg);
+    if (!node?.id) { vscode.window.showWarningMessage('Run this on a flow node.'); return; }
+    const flow = { id: node.id, name: node.name ?? 'Flow', type: node.type };
+    await withCancellable(`Fuuz: building fix plan for ${flow.name}…`, async signal => {
+      const cache: FlowFetchCache = {};
+      const graph = await fetchFlowGraph(resourceService, tenant, flow, cache, signal);
+      if (!graph) { vscode.window.showWarningMessage("Fuuz: couldn't read this flow over MCP."); return; }
+      const ctx = await buildFlowContext(resourceService, tenant, signal);
+      const report = runFlowGraphCompliance(graph, ctx);
+      const md = buildFlowFixPlan(graph, report);
+      await deliverFixPlan(tenant.name, flow.name, md);
+    });
+  });
+
+  // Fix plan (whole tenant): audit models+flows+screens → one remediation brief.
+  register('fuuz.generateTenantFixPlan', async () => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const snap = configManager.getCachedResources(tenant.id);
+    const flows: Array<{ id: string; name: string; type?: string }> = [];
+    const screens: Array<{ id: string; name: string }> = [];
+    for (const mg of snap?.mcp?.application ?? []) {
+      for (const m of mg.modules ?? []) {
+        for (const f of m.flows ?? []) if (f.id) flows.push({ id: f.id, name: f.name, type: f.type });
+        for (const s of m.screens ?? []) if (s.id) screens.push({ id: s.id, name: s.name });
+      }
+    }
+    if (flows.length === 0 && screens.length === 0) { vscode.window.showInformationMessage('Fuuz: nothing to audit (sync the tenant first).'); return; }
+    const FLOW_CAP = 100, SCREEN_CAP = 100;
+    await withCancellable(`Fuuz: building fix plan for ${tenant.name}…`, async signal => {
+      const cache: FlowFetchCache = {};
+      const ctx = await buildFlowContext(resourceService, tenant, signal);
+      const flowInputs: FlowFixInput[] = [];
+      const graphs: FlowGraph[] = [];
+      for (const f of flows.slice(0, FLOW_CAP)) {
+        if (signal?.aborted) return;
+        const g = await fetchFlowGraph(resourceService, tenant, f, cache, signal, false).catch(() => null);
+        if (g) { graphs.push(g); flowInputs.push({ graph: g, report: runFlowGraphCompliance(g, ctx) }); }
+      }
+      const screenReports: ComplianceReport[] = [];
+      for (const s of screens.slice(0, SCREEN_CAP)) {
+        if (signal?.aborted) return;
+        const m = await fetchScreenModel(resourceService, tenant, s, signal).catch(() => null);
+        if (m) screenReports.push(runScreenCompliance(m));
+      }
+      const cross = graphs.length > 1 ? analyzeFlowsCrossCutting(graphs) : undefined;
+      const md = buildTenantFixPlan(tenant.name, { flows: flowInputs, cross, screens: screenReports });
+      await deliverFixPlan(tenant.name, tenant.name, md);
+    });
+  });
+
   // Schema Doctor: write a convention-compliant outline for a new artifact.
   register('fuuz.scaffoldArtifact', async () => {
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -1057,6 +1113,46 @@ async function launchClaudeQa(
   vscode.window.showInformationMessage(
     `Fuuz: launching Claude Code with a headed browser against ${targetUrl}. Log in each persona when prompted; artifacts → ${runRel}/artifacts.`
   );
+}
+
+/**
+ * Write a remediation fix plan to `.fuuz/fixplans/<tenant>/`, open it for review,
+ * and offer to hand it to Claude Code — which applies the changes via the Fuuz
+ * MCP already registered in `~/.claude.json`. The extension never mutates the
+ * tenant itself: the human reviews/accepts, Claude executes (supervised).
+ */
+async function deliverFixPlan(tenantName: string, subject: string, markdown: string): Promise<void> {
+  const ws = vscode.workspace.workspaceFolders?.[0];
+  const safe = (s: string) => s.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'plan';
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+  let fileUri: vscode.Uri;
+  if (ws) {
+    const dir = vscode.Uri.joinPath(ws.uri, '.fuuz', 'fixplans', safe(tenantName));
+    await vscode.workspace.fs.createDirectory(dir);
+    fileUri = vscode.Uri.joinPath(dir, `${safe(subject)}-${stamp}.md`);
+    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(markdown, 'utf8'));
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(fileUri), { preview: false });
+  } else {
+    const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: markdown });
+    await vscode.window.showTextDocument(doc, { preview: false });
+    fileUri = doc.uri;
+  }
+
+  const choice = await vscode.window.showInformationMessage(
+    `Fuuz: fix plan ready for ${subject}. Review it, then run it with Claude Code (applies changes via the Fuuz MCP).`,
+    'Run with Claude Code',
+  );
+  if (choice !== 'Run with Claude Code') return;
+  if (!ws) { vscode.window.showWarningMessage('Open the workspace folder to launch Claude Code here.'); return; }
+
+  const rel = vscode.workspace.asRelativePath(fileUri, false);
+  const prompt =
+    `Read the Fuuz fix plan at ${rel} and carry out its remediation steps for tenant "${tenantName}" using the Fuuz MCP tools. ` +
+    `Use only the platform system_* tools; confirm each change set with me before mutating; redeploy each edited component.`;
+  const term = vscode.window.createTerminal({ name: `Fuuz Fix — ${subject}`, cwd: ws.uri });
+  term.show();
+  term.sendText(`claude '${prompt.replace(/'/g, "'\\''")}'`, true);
 }
 
 /**

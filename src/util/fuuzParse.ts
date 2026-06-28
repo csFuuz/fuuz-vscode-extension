@@ -123,6 +123,9 @@ export function parseModelFieldRecords(text: string): Rec[] {
 export const SCALAR_TYPES = new Set([
   'ID', 'String', 'Boolean', 'Int', 'Float', 'DateTime', 'Date', 'Time',
   'JSON', 'JSONObject', 'BigInt', 'Decimal', 'Long', 'Upload', 'Byte', 'UUID', 'Email', 'URL',
+  // Duration is a composite *scalar* ({ milliseconds, text } where text is ISO),
+  // NOT a relation to another model — don't draw an ERD edge or require a FK.
+  'Duration',
 ]);
 
 /** Strip list/non-null markers (`[`, `]`, `!`) to get a type's base name. */

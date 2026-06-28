@@ -64,10 +64,15 @@ test('query page size > 500 warns; nested result sets noted', () => {
   assert.ok(r.findings.some(x => /first: 1000/.test(x.message) && /nested/.test(x.message)));
 });
 
-test('long inline scripts (>100 lines) suggested as saved scripts', () => {
-  const big = Array.from({ length: 130 }, (_, i) => `var x${i}=${i};`).join('\n');
-  const f = flow([node({ id: 's', kind: 'inlineScript', name: 'Big calc', script: big })]);
-  assert.ok(ruleOf(f, 'flow-long-scripts').findings.some(x => /130 lines/.test(x.message)));
+test('long inline scripts (>300 lines) suggested as saved scripts; ≤300 pass', () => {
+  const ok = Array.from({ length: 130 }, (_, i) => `var x${i}=${i};`).join('\n');
+  assert.equal(ruleOf(flow([node({ id: 's', kind: 'inlineScript', name: 'Mid calc', script: ok })]), 'flow-long-scripts').findings.length, 0);
+  const big = Array.from({ length: 320 }, (_, i) => `var x${i}=${i};`).join('\n');
+  const r = ruleOf(flow([node({ id: 's', kind: 'inlineScript', name: 'Big calc', script: big })]), 'flow-long-scripts');
+  const finding = r.findings.find(x => /320 lines/.test(x.message))!;
+  assert.ok(finding);
+  assert.equal(finding.targetId, 's');
+  assert.ok(finding.suggestion && /Script/.test(finding.suggestion));
 });
 
 test('error handling: tryCatch node or in-script try/catch passes; nothing warns', () => {

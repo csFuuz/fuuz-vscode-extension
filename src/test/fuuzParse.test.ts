@@ -264,6 +264,8 @@ test('baseType / isRelationType: scalars vs model references', () => {
   assert.equal(isRelationType('String!'), false);
   assert.equal(isRelationType('ID!'), false);
   assert.equal(isRelationType('[JSONObject!]'), false); // JSON arrays aren't relations
+  assert.equal(isRelationType('Duration'), false); // composite scalar {milliseconds,text}, not a relation
+  assert.equal(isRelationType('Duration!'), false);
   assert.equal(isRelationType('Tenant'), true);
   assert.equal(isRelationType('[UserTenant!]'), true);
 });

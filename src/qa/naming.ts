@@ -47,3 +47,41 @@ export function judgeName(raw: string | undefined, kind = 'item'): NameVerdict {
 export function isAmbiguousName(raw: string | undefined, kind = 'item'): boolean {
   return judgeName(raw, kind).ambiguous;
 }
+
+// --- suggestion helpers (heuristic seed; Claude refines in the fix plan) ---
+
+/** `productionRun` / `ProductionRun` / `production_run` → `Production Run`. */
+export function humanize(token: string): string {
+  return token
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/** Pull a candidate label from a script's leading comment / jsdoc title. */
+export function scriptTitle(src: string | undefined): string | undefined {
+  if (!src) return undefined;
+  for (const raw of src.split('\n').slice(0, 8)) {
+    const t = raw.trim();
+    if (!t) continue;
+    // Only mine comment lines — stop at the first line of actual code.
+    if (!/^(\/\*|\*|\/\/)/.test(t)) return undefined;
+    const line = t.replace(/^(\/\*+|\*+\/?|\/\/)\s*/, '').trim();
+    if (!line || /^@/.test(line)) continue;
+    // a short, name-like comment line (e.g. "corePostingCalculation — …")
+    const head = line.split(/[—:\-(]/)[0].trim();
+    if (head && head.length >= 3 && head.length <= 48 && /[A-Za-z]/.test(head) && head.split(/\s+/).length <= 6) {
+      return humanize(head.replace(/\(.*$/, ''));
+    }
+  }
+  return undefined;
+}
+
+/** A friendly, distinct saved-artifact name from a base label. */
+export function savedName(base: string, kind: 'Script' | 'Query'): string {
+  const clean = humanize(base).replace(/\b(script|query|saved)\b/gi, '').replace(/\s+/g, ' ').trim();
+  return `${clean || base} ${kind}`.trim();
+}
+

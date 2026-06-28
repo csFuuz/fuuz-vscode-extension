@@ -57,6 +57,10 @@ export interface Finding {
   where?: string;
   /** How to fix it. */
   fix?: string;
+  /** Stable id of the artifact/node the fix targets (for MCP mutations). */
+  targetId?: string;
+  /** A concrete proposed value (e.g. a suggested node name) — Claude refines it. */
+  suggestion?: string;
 }
 
 /** Outcome of one rule: how many assertions it ran, how many passed, and why. */

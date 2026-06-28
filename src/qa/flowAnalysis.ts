@@ -20,7 +20,8 @@
 import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER } from './complianceTypes';
 import { FlowGraph, FlowNode, FlowAnalysisContext } from './flowTypes';
 import { lookupModel } from './modelContext';
-import { judgeName } from './naming';
+import { judgeName, humanize, scriptTitle, savedName } from './naming';
+import { clusterBySimilarity, SimMember } from './similarity';
 
 const rule = (ruleId: string, title: string, checks: number, passed: number, findings: Finding[]): RuleResult =>
   ({ ruleId, title, checks, passed, findings });
@@ -37,6 +38,48 @@ const PASS_THROUGH = (t: string | undefined) => { const s = (t ?? '').trim(); re
 
 const LARGE_RECORD_COUNT = 5000;
 const BIG_PAGE = 500;
+const LONG_SCRIPT_LINES = 300;
+const SIMILARITY_THRESHOLD = 0.8;
+
+/**
+ * A heuristic display name for a node, used to seed rename suggestions. Claude
+ * refines these against full context in the fix plan.
+ */
+export function suggestNodeName(n: FlowNode): string {
+  switch (n.kind) {
+    case 'query': {
+      const roots = rootModelsOf(n.query ?? '');
+      return roots.length ? `Query ${roots.slice(0, 2).map(humanize).join(' & ')}` : 'Query';
+    }
+    case 'inlineScript':
+    case 'jsonata':
+      return scriptTitle(n.script) ?? (n.kind === 'jsonata' ? 'Transform' : 'Script');
+    case 'savedTransform':
+      return n.savedRef?.name ?? 'Saved Script';
+    case 'http':
+      return n.connectionName ? `HTTP ${humanize(n.connectionName)}` : 'HTTP Request';
+    case 'entry':
+      return n.entryType === 'request' ? 'Request' : humanize(n.entryType ?? 'Entry');
+    case 'ifElse':
+      return 'If/Else';
+    case 'switch':
+      return 'Route';
+    case 'collect':
+      return 'Collect';
+    case 'fork':
+      return 'Fork';
+    case 'tryCatch':
+      return 'Try/Catch';
+    case 'response':
+      return 'Response';
+    case 'mutate':
+      return 'Mutate';
+    case 'validate':
+      return 'Validate Payload';
+    default:
+      return humanize(n.rawType || 'Node');
+  }
+}
 
 // --- single-flow rules ----------------------------------------------------
 
@@ -103,7 +146,14 @@ function nodeNaming(g: FlowGraph): RuleResult {
   for (const n of g.nodes) {
     const v = judgeName(n.name, 'Node');
     if (!v.ambiguous) passed++;
-    else findings.push({ ruleId: 'flow-node-naming', severity: 'warn', message: v.reason!, where: where(n), fix: 'Rename to describe what the node does (use “Rename Flow Nodes”).' });
+    else {
+      const suggestion = suggestNodeName(n);
+      findings.push({
+        ruleId: 'flow-node-naming', severity: 'warn', where: where(n), targetId: n.id, suggestion,
+        message: `${v.reason!} — suggested: “${suggestion}”`,
+        fix: 'Rename to describe what the node does (Claude can refine + apply via system_data_flow_mutations).',
+      });
+    }
   }
   return rule('flow-node-naming', 'Nodes are clearly named', g.nodes.length || 1, g.nodes.length ? passed : 1, findings);
 }
@@ -114,7 +164,7 @@ function nodeDescriptions(g: FlowGraph): RuleResult {
   let passed = 0;
   for (const n of g.nodes) {
     if ((n.description ?? '').trim()) passed++;
-    else findings.push({ ruleId: 'flow-node-descriptions', severity: 'info', message: `Node "${where(n)}" has no description`, where: where(n), fix: 'Add a short description (use “Add Node Descriptions”).' });
+    else findings.push({ ruleId: 'flow-node-descriptions', severity: 'info', message: `Node "${where(n)}" has no description`, where: where(n), targetId: n.id, fix: 'Add a short description (Claude can generate + apply via system_data_flow_mutations).' });
   }
   return rule('flow-node-descriptions', 'Nodes have descriptions', g.nodes.length || 1, g.nodes.length ? passed : 1, findings);
 }
@@ -138,10 +188,15 @@ function longScripts(g: FlowGraph): RuleResult {
   let passed = 0;
   for (const n of ss) {
     const lines = n.script!.split('\n').length;
-    if (lines <= 100) passed++;
-    else findings.push({ ruleId: 'flow-long-scripts', severity: 'warn', message: `Script node "${where(n)}" is ${lines} lines`, where: where(n), fix: 'Convert to a Saved Script and reference it (reuse + testability + a declared input schema).' });
+    if (lines <= LONG_SCRIPT_LINES) passed++;
+    else findings.push({
+      ruleId: 'flow-long-scripts', severity: 'warn', where: where(n), targetId: n.id,
+      suggestion: savedName(scriptTitle(n.script) ?? n.name ?? 'Extracted', 'Script'),
+      message: `Script node "${where(n)}" is ${lines} lines (>${LONG_SCRIPT_LINES})`,
+      fix: 'Extract to a Saved Script (declares an input schema, reusable + testable) and reference it via a savedTransformV2 node.',
+    });
   }
-  return rule('flow-long-scripts', 'Inline scripts are reasonably sized', ss.length || 1, ss.length ? passed : 1, findings);
+  return rule('flow-long-scripts', `Inline scripts are reasonably sized (≤${LONG_SCRIPT_LINES} lines)`, ss.length || 1, ss.length ? passed : 1, findings);
 }
 
 /**
@@ -166,7 +221,7 @@ function savedContract(g: FlowGraph, ctx?: FlowAnalysisContext): RuleResult {
       message: declaresContract
         ? `Saved script "${n.savedRef?.name ?? where(n)}" receives the whole context ($) but declares an input schema — no payload contract`
         : `Saved script/query "${where(n)}" receives the whole context ($) with no validation`,
-      where: where(n),
+      where: where(n), targetId: n.id,
       fix: 'Add a Validate (payload-contract) node before it, or a request transform that maps to the saved transform’s input schema.',
     });
   }
@@ -235,7 +290,7 @@ function queryScoping(g: FlowGraph, ctx?: FlowAnalysisContext): RuleResult {
       message: large
         ? `Unfiltered query "${where(n)}" on ${large.name} (~${large.recordCount} records) — will return everything`
         : `Unfiltered query "${where(n)}" (no where filter / variable transform) on ${target}`,
-      where: where(n),
+      where: where(n), targetId: n.id,
       fix: 'Add a where filter scoped to the request, or implement a pagination cycle (store each page in context, track nextPage, loop until exhausted). Exception: setup-type models.',
     });
   }
@@ -256,7 +311,7 @@ function queryPageSize(g: FlowGraph): RuleResult {
     findings.push({
       ruleId: 'flow-query-pagesize', severity: 'warn',
       message: `Query "${where(n)}" requests first: ${maxFirst} (>${BIG_PAGE})${nested ? ' with nested result sets' : ''} — potential long-running query`,
-      where: where(n),
+      where: where(n), targetId: n.id,
       fix: nested ? 'Narrow the page size and/or paginate; avoid deep nested edges in one pull.' : 'Lower the page size or paginate the results.',
     });
   }
@@ -374,44 +429,59 @@ export function normalizeScript(src: string): string {
     .trim();
 }
 
-/**
- * Look across many flows for repetition worth extracting:
- *  - the same inline query in ≥2 flows → suggest a Saved Query
- *  - the same non-trivial inline script in ≥2 flows → suggest a Saved Script
- */
-export function analyzeFlowsCrossCutting(graphs: FlowGraph[]): ComplianceReport {
-  const queryFlows = new Map<string, { flows: Set<string>; sample: string }>();
-  const scriptFlows = new Map<string, { flows: Set<string>; sample: string }>();
+interface CrossMeta { flow: string; node: string; nodeId: string; kind: 'query' | 'inlineScript'; rep: FlowNode; }
 
+/** Collect inline snippets of a kind across flows (above a size floor). */
+function collectSnippets(graphs: FlowGraph[], kind: 'query' | 'inlineScript', minLen: number): SimMember<CrossMeta>[] {
+  const out: SimMember<CrossMeta>[] = [];
   for (const g of graphs) {
     for (const n of g.nodes) {
-      if (n.kind === 'query' && n.query) {
-        const norm = normalizeScript(n.query);
-        if (norm.length < 40) continue;
-        if (!queryFlows.has(norm)) queryFlows.set(norm, { flows: new Set(), sample: where(n) });
-        queryFlows.get(norm)!.flows.add(g.name);
-      }
-      if (n.kind === 'inlineScript' && n.script) {
-        const norm = normalizeScript(n.script);
-        if (norm.length < 60) continue;
-        if (!scriptFlows.has(norm)) scriptFlows.set(norm, { flows: new Set(), sample: where(n) });
-        scriptFlows.get(norm)!.flows.add(g.name);
-      }
+      if (n.kind !== kind) continue;
+      const text = kind === 'query' ? n.query : n.script;
+      if (!text || normalizeScript(text).length < minLen) continue;
+      out.push({ id: `${g.name}::${n.id}`, text, meta: { flow: g.name, node: where(n), nodeId: n.id, kind, rep: n } });
     }
   }
+  return out;
+}
 
-  const qFindings: Finding[] = [];
-  for (const [, { flows, sample }] of queryFlows) if (flows.size >= 2) {
-    qFindings.push({ ruleId: 'flow-shared-query', severity: 'warn', message: `A query (e.g. "${sample}") appears in ${flows.size} flows (${[...flows].join(', ')})`, fix: 'Convert to a Saved Query and reference it from each flow.' });
-  }
-  const sFindings: Finding[] = [];
-  for (const [, { flows, sample }] of scriptFlows) if (flows.size >= 2) {
-    sFindings.push({ ruleId: 'flow-shared-script', severity: 'warn', message: `A script (e.g. "${sample}") is duplicated across ${flows.size} flows (${[...flows].join(', ')})`, fix: 'Convert to a Saved Script and reference it from each flow.' });
-  }
+/**
+ * Cross-flow analysis: find **highly similar** (not just identical) inline scripts
+ * and queries embedded across flows, and suggest extracting each cluster into a
+ * Saved Script / Saved Query referenced from every flow.
+ */
+export function analyzeFlowsCrossCutting(graphs: FlowGraph[]): ComplianceReport {
+  const queries = collectSnippets(graphs, 'query', 40);
+  const scripts = collectSnippets(graphs, 'inlineScript', 60);
+
+  const qClusters = clusterBySimilarity(queries, m => m.meta.flow, SIMILARITY_THRESHOLD, 4);
+  const sClusters = clusterBySimilarity(scripts, m => m.meta.flow, SIMILARITY_THRESHOLD, 4);
+
+  const qFindings: Finding[] = qClusters.map(c => {
+    const flows = [...new Set(c.members.map(m => m.meta.flow))];
+    const roots = rootModelsOf(c.members[0].meta.rep.query ?? '');
+    const suggestion = savedName(roots[0] ? humanize(roots[0]) : (c.members[0].meta.node || 'Shared'), 'Query');
+    return {
+      ruleId: 'flow-shared-query', severity: 'warn',
+      suggestion,
+      message: `${c.members.length} ${c.similarity >= 0.99 ? 'identical' : `~${Math.round(c.similarity * 100)}% similar`} queries across ${flows.length} flows (${flows.join(', ')}) — e.g. "${c.members[0].meta.node}"`,
+      fix: `Extract to a Saved Query “${suggestion}” and reference it from each flow (parameterize the differences).`,
+    };
+  });
+  const sFindings: Finding[] = sClusters.map(c => {
+    const flows = [...new Set(c.members.map(m => m.meta.flow))];
+    const suggestion = savedName(scriptTitle(c.members[0].meta.rep.script) ?? c.members[0].meta.node ?? 'Shared', 'Script');
+    return {
+      ruleId: 'flow-shared-script', severity: 'warn',
+      suggestion,
+      message: `${c.members.length} ${c.similarity >= 0.99 ? 'identical' : `~${Math.round(c.similarity * 100)}% similar`} scripts across ${flows.length} flows (${flows.join(', ')}) — e.g. "${c.members[0].meta.node}"`,
+      fix: `Extract to a Saved Script “${suggestion}” and reference it from each flow (parameterize the differences).`,
+    };
+  });
 
   const rules: RuleResult[] = [
-    rule('flow-shared-query', 'Repeated queries extracted to Saved Queries', queryFlows.size || 1, (queryFlows.size || 1) - qFindings.length, qFindings),
-    rule('flow-shared-script', 'Repeated scripts extracted to Saved Scripts', scriptFlows.size || 1, (scriptFlows.size || 1) - sFindings.length, sFindings),
+    rule('flow-shared-query', 'Similar queries extracted to Saved Queries', Math.max(1, queries.length), Math.max(1, queries.length) - qFindings.length, qFindings),
+    rule('flow-shared-script', 'Similar scripts extracted to Saved Scripts', Math.max(1, scripts.length), Math.max(1, scripts.length) - sFindings.length, sFindings),
   ];
   return toReport(`All flows (${graphs.length})`, rules);
 }

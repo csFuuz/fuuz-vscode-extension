@@ -2,7 +2,7 @@
   "name": "fuuz-vscode-extension",
   "displayName": "Fuuz for VS Code",
   "description": "VS Code extension for Fuuz application management with multi-tenant MCP support",
-  "version": "0.35.0",
+  "version": "0.36.0",
   "publisher": "cscott",
   "icon": "media/icon.png",
   "repository": {
@@ -135,6 +135,18 @@
         "title": "Check All Flows (shared queries/scripts)",
         "category": "Fuuz",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "fuuz.generateFlowFixPlan",
+        "title": "Generate Fix Plan for Flow (Claude)",
+        "category": "Fuuz",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "fuuz.generateTenantFixPlan",
+        "title": "Generate Fix Plan for Tenant (Claude)",
+        "category": "Fuuz",
+        "icon": "$(wand)"
       },
       {
         "command": "fuuz.checkTenant",
@@ -472,6 +484,10 @@
           "command": "fuuz.checkFlowCompliance",
           "when": "view == fuuzResourceTree && viewItem == flow",
           "group": "inline"
+        },
+        {
+          "command": "fuuz.generateFlowFixPlan",
+          "when": "view == fuuzResourceTree && viewItem == flow"
         },
         {
           "command": "fuuz.checkScreenCompliance",
