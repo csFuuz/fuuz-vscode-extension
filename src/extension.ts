@@ -17,14 +17,19 @@ import { ConfigPanel } from './ui/configPanel';
 import { FuuzStatusBar } from './ui/statusBar';
 import { registerRuntimeCommands } from './ui/runtimeCommands';
 import { ErdPanel } from './ui/erdPanel';
+import { ResourceContentProvider, FUUZ_SCHEME, resourceContentUri } from './ui/resourceContentProvider';
 import { buildModelGraph, buildSetGraph } from './util/fuuzParse';
 import type { ErdService } from './util/erdTypes';
 import { fuuzLog } from './services/logger';
 import { isAbortError } from './util/abort';
 import { runCompliance } from './qa/complianceChecker';
 import { runFlowGraphCompliance, analyzeFlowsCrossCutting } from './qa/flowAnalysis';
-import { chooseFlowFields, flowFkField, adaptFlowElements } from './qa/flowDescriptor';
-import type { FlowGraph } from './qa/flowTypes';
+import { adaptFlow, FLOW_ELEMENT_FIELDS } from './qa/flowDescriptor';
+import type { FlowGraph, FlowAnalysisContext, FlowVersionInfo } from './qa/flowTypes';
+import { buildModelIndex, buildSavedTransformIndex } from './qa/modelContext';
+import { decodeTronPayload } from './util/tron';
+import { runScreenCompliance } from './qa/screenAnalysis';
+import { buildScreenModel } from './qa/screenDescriptor';
 import { runTenantAudit } from './qa/tenantAudit';
 import { scaffoldFor } from './qa/scaffolds';
 import { parseOutline, kindFromFileName, OutlineParseError } from './qa/outline';
@@ -610,16 +615,40 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     if (!flowId) { vscode.window.showWarningMessage('Run this on a flow node.'); return; }
     const flow = { id: flowId, name: node?.name ?? 'Flow', type: node?.type };
 
-    await withCancellable(`Fuuz: analyzing ${flow.name}…`, async () => {
+    await withCancellable(`Fuuz: analyzing ${flow.name}…`, async signal => {
       const cache: FlowFetchCache = {};
-      const graph = await fetchFlowGraph(resourceService, tenant, flow, cache);
+      const graph = await fetchFlowGraph(resourceService, tenant, flow, cache, signal);
       if (!graph) {
-        vscode.window.showWarningMessage("Fuuz: couldn't read this flow's nodes over MCP (DataFlowElement schema). Confirm the tenant connection and try again.");
+        vscode.window.showWarningMessage("Fuuz: couldn't read this flow's nodes over MCP (DataFlowElement). Confirm the tenant connection and try again.");
         return;
       }
-      const report = runFlowGraphCompliance(graph);
+      const ctx = await buildFlowContext(resourceService, tenant, signal);
+      const report = runFlowGraphCompliance(graph, ctx);
       ReportPanel.show(context, report);
       const msg = `Fuuz: ${flow.name} — ${report.score}% (${report.passed}/${report.checks} checks, ${graph.nodes.length} nodes).`;
+      if (report.score >= 90) vscode.window.showInformationMessage(msg);
+      else vscode.window.showWarningMessage(msg);
+    });
+  });
+
+  // Screen compliance: analyze a real screen's elements over MCP.
+  register('fuuz.checkScreenCompliance', async (arg?: unknown) => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const node = nodeArg(arg);
+    const screenId = node?.id;
+    if (!screenId) { vscode.window.showWarningMessage('Run this on a screen node.'); return; }
+    const screen = { id: screenId, name: node?.name ?? 'Screen' };
+
+    await withCancellable(`Fuuz: analyzing ${screen.name}…`, async signal => {
+      const model = await fetchScreenModel(resourceService, tenant, screen, signal);
+      if (!model) {
+        vscode.window.showWarningMessage("Fuuz: couldn't read this screen's elements over MCP (ScreenElement). Confirm the tenant connection and try again.");
+        return;
+      }
+      const report = runScreenCompliance(model);
+      ReportPanel.show(context, report);
+      const msg = `Fuuz: ${screen.name} — ${report.score}% (${report.passed}/${report.checks} checks, ${model.elements.length} elements).`;
       if (report.score >= 90) vscode.window.showInformationMessage(msg);
       else vscode.window.showWarningMessage(msg);
     });
@@ -640,11 +669,12 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     const MAX = 50;
     const slice = flows.slice(0, MAX);
 
-    await withCancellable(`Fuuz: analyzing ${slice.length} flows…`, async () => {
+    await withCancellable(`Fuuz: analyzing ${slice.length} flows…`, async signal => {
       const cache: FlowFetchCache = {};
       const graphs: FlowGraph[] = [];
       for (const f of slice) {
-        const g = await fetchFlowGraph(resourceService, tenant, f, cache).catch(() => null);
+        if (signal?.aborted) return;
+        const g = await fetchFlowGraph(resourceService, tenant, f, cache, signal, false).catch(() => null);
         if (g) graphs.push(g);
       }
       if (graphs.length === 0) { vscode.window.showWarningMessage("Fuuz: couldn't read flow nodes over MCP. Confirm the tenant connection."); return; }
@@ -662,22 +692,25 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     const snap = configManager.getCachedResources(tenant.id);
     const models: string[] = [];
     const flows: Array<{ id: string; name: string; type?: string }> = [];
+    const screens: Array<{ id: string; name: string }> = [];
     for (const mg of snap?.mcp?.application ?? []) {
       for (const m of mg.modules ?? []) {
         for (const dm of m.dataModels ?? []) if (dm.name) models.push(dm.name);
         for (const f of m.flows ?? []) if (f.id) flows.push({ id: f.id, name: f.name, type: f.type });
+        for (const s of m.screens ?? []) if (s.id) screens.push({ id: s.id, name: s.name });
       }
     }
-    if (models.length === 0 && flows.length === 0) {
+    if (models.length === 0 && flows.length === 0 && screens.length === 0) {
       vscode.window.showInformationMessage('Fuuz: nothing to audit (sync the tenant first).');
       return;
     }
-    const MODEL_CAP = 150, FLOW_CAP = 100;
+    const MODEL_CAP = 150, FLOW_CAP = 100, SCREEN_CAP = 100;
 
     await withCancellable(`Fuuz: auditing ${tenant.name}…`, async signal => {
       const reports: ComplianceReport[] = [];
       const cache: FlowFetchCache = {};
       const flowGraphs: FlowGraph[] = [];
+      const ctx = await buildFlowContext(resourceService, tenant, signal);
 
       for (const name of models.slice(0, MODEL_CAP)) {
         if (signal?.aborted) return;
@@ -692,16 +725,21 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       }
       for (const f of flows.slice(0, FLOW_CAP)) {
         if (signal?.aborted) return;
-        const g = await fetchFlowGraph(resourceService, tenant, f, cache).catch(() => null);
-        if (g) { flowGraphs.push(g); reports.push(runFlowGraphCompliance(g)); }
+        const g = await fetchFlowGraph(resourceService, tenant, f, cache, signal, false).catch(() => null);
+        if (g) { flowGraphs.push(g); reports.push(runFlowGraphCompliance(g, ctx)); }
+      }
+      for (const s of screens.slice(0, SCREEN_CAP)) {
+        if (signal?.aborted) return;
+        const m = await fetchScreenModel(resourceService, tenant, s, signal).catch(() => null);
+        if (m) reports.push(runScreenCompliance(m));
       }
       if (flowGraphs.length > 1) reports.push(analyzeFlowsCrossCutting(flowGraphs));
 
       if (reports.length === 0) { vscode.window.showWarningMessage('Fuuz: audit produced no results (check the tenant connection).'); return; }
       const audit = runTenantAudit(tenant.name, reports);
       ReportPanel.show(context, audit);
-      if (models.length > MODEL_CAP || flows.length > FLOW_CAP) {
-        fuuzLog(`tenant audit: capped at ${MODEL_CAP} models / ${FLOW_CAP} flows (tenant has ${models.length}/${flows.length}).`);
+      if (models.length > MODEL_CAP || flows.length > FLOW_CAP || screens.length > SCREEN_CAP) {
+        fuuzLog(`tenant audit: capped at ${MODEL_CAP} models / ${FLOW_CAP} flows / ${SCREEN_CAP} screens (tenant has ${models.length}/${flows.length}/${screens.length}).`);
       }
       const msg = `Fuuz: ${tenant.name} — ${audit.score}% across ${reports.length} artifact(s).`;
       if (audit.score >= 90) vscode.window.showInformationMessage(msg);
@@ -792,6 +830,24 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
   // ERD commands (single model / module / whole application) live in their own
   // registrar to keep this function focused — mirrors registerRuntimeCommands.
   registerErdCommands(context, configManager, resourceService);
+
+  // Read-only viewer for saved scripts/queries: open the real content from the tree.
+  const contentProvider = new ResourceContentProvider(configManager, resourceService);
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(FUUZ_SCHEME, contentProvider));
+  register('fuuz.openResourceContent', async (arg?: unknown) => {
+    if (!configManager.getActiveTenant()) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const contextValue = (arg as { contextValue?: string })?.contextValue ?? '';
+    const data = nodeArg(arg);
+    const target = resourceContentUri(contextValue, data);
+    if (!target) { vscode.window.showWarningMessage('Fuuz: open this on a saved Script or Query.'); return; }
+    try {
+      const doc = await vscode.workspace.openTextDocument(target.uri);
+      try { await vscode.languages.setTextDocumentLanguage(doc, target.langId); } catch { /* grammar not installed — leave default */ }
+      await vscode.window.showTextDocument(doc, { preview: true });
+    } catch (err) {
+      vscode.window.showWarningMessage(`Fuuz: couldn't open content — ${errMsg(err)}`);
+    }
+  });
 
   register('fuuz.createTool', async () => {
     const enterprise = configManager.getActiveEnterprise();
@@ -1148,54 +1204,97 @@ async function runQaInBrowser(configManager: TenantConfigurationManager, tokenSt
   await launchClaudeQa(configManager, tokenStore, runDir, targetUrl);
 }
 
-/** Cached schema lookups reused across flows in one analysis run. */
+/** Per-analysis cache: the cross-referenced tenant context, built once. */
 interface FlowFetchCache {
-  /** DataFlowElement field names (discovered once). */
-  fields?: string[];
-  /** dataFlowElementTypeId → label, resolved once. */
-  typeLabels?: Map<string, string>;
+  context?: FlowAnalysisContext;
 }
 
 /**
- * Read a flow's nodes (`DataFlowElement`) over MCP and adapt them to a FlowGraph.
- * Discovers the model's fields at runtime so it adapts to the tenant's schema
- * rather than assuming field names. Returns null when the nodes can't be read.
+ * Build the tenant facts the flow analyzers cross-reference — a data-model index
+ * (type + estimated record count) and a saved-transform index (input-schema
+ * presence). Uses ONLY the platform `system_query_model` tool (never user-built
+ * `data_flow_*` flows, which can be incomplete/unreliable). Degrades to an empty
+ * context on failure so analysis still runs (with weaker heuristics).
+ */
+async function buildFlowContext(
+  resourceService: TenantDataService,
+  tenant: import('./types').Tenant,
+  signal?: AbortSignal
+): Promise<FlowAnalysisContext> {
+  const ctx: FlowAnalysisContext = {};
+  try {
+    const res = await resourceService.queryModel(tenant, 'DataModel', ['id', 'name', 'dataModelTypeId', 'estimatedRecordCount'], '{}', 'application', signal);
+    if (res?.raw) ctx.models = buildModelIndex(decodeTronPayload(res.raw));
+  } catch { /* no model index — query-scoping rule degrades to a generic warning */ }
+  try {
+    const res = await resourceService.queryModel(tenant, 'SavedTransform', ['id', 'name', 'inputSchema', 'deprecated'], '{}', 'application', signal);
+    if (res?.raw) ctx.savedTransforms = buildSavedTransformIndex(decodeTronPayload(res.raw));
+  } catch { /* no saved-transform index — payload-contract rule degrades to info */ }
+  return ctx;
+}
+
+/** Best-effort fetch of a flow's version history (for the release-notes check). */
+async function fetchFlowVersions(
+  resourceService: TenantDataService,
+  tenant: import('./types').Tenant,
+  flowId: string,
+  signal?: AbortSignal
+): Promise<FlowVersionInfo[] | undefined> {
+  try {
+    const res = await resourceService.queryModel(
+      tenant, 'DataFlow',
+      ['id', 'versions.edges.node.number', 'versions.edges.node.description', 'versions.edges.node.deployed'],
+      JSON.stringify({ id: { _eq: flowId } }), 'application', signal,
+    );
+    if (!res?.raw) return undefined;
+    const rows = decodeTronPayload(res.raw);
+    const edges = (rows[0] as any)?.versions?.edges;
+    if (!Array.isArray(edges)) return undefined;
+    return edges.map((e: any) => ({ number: e?.node?.number, description: e?.node?.description, deployed: e?.node?.deployed === true || e?.node?.deployed === 'true' }));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read a flow's nodes (`DataFlowElement`) over the platform `system_query_model`
+ * tool and adapt them to a FlowGraph. `DataFlowElement` is a stable system model,
+ * so the field set is fixed; nested `configuration` is decoded into real objects.
+ * Returns null when the nodes can't be read.
  */
 async function fetchFlowGraph(
   resourceService: TenantDataService,
   tenant: import('./types').Tenant,
   flow: { id: string; name: string; type?: string },
-  cache: FlowFetchCache
+  _cache: FlowFetchCache,
+  signal?: AbortSignal,
+  withVersions = true
 ): Promise<FlowGraph | null> {
-  if (!cache.fields) {
-    const meta = await resourceService.getModelFields(tenant, 'DataFlowElement').catch(() => []);
-    cache.fields = meta.map(f => f.name);
-  }
-  const available = cache.fields;
-  if (available.length === 0) return null;
+  const where = JSON.stringify({ dataFlowId: { _eq: flow.id } });
+  const res = await resourceService.queryModel(tenant, 'DataFlowElement', FLOW_ELEMENT_FIELDS, where, 'application', signal).catch(() => null);
+  if (!res?.raw) return null;
+  const rows = decodeTronPayload(res.raw);
+  if (rows.length === 0) return null;
+  const versions = withVersions ? await fetchFlowVersions(resourceService, tenant, flow.id, signal) : undefined;
+  return adaptFlow({ id: flow.id, name: flow.name, type: flow.type, versions }, rows);
+}
 
-  const fk = flowFkField(available);
-  if (!fk) return null; // can't link elements to the flow
-
-  const fields = chooseFlowFields(available);
-  const where = JSON.stringify({ [fk]: { _eq: flow.id } });
-  const res = await resourceService.queryModel(tenant, 'DataFlowElement', fields, where).catch(() => null);
-  if (!res) return null;
-
-  // Resolve element-type labels once (when nodes only carry a typeId).
-  if (!cache.typeLabels && available.includes('dataFlowElementTypeId')) {
-    cache.typeLabels = new Map();
-    try {
-      const tMeta = await resourceService.getModelFields(tenant, 'DataFlowElementType');
-      const labelField = ['label', 'name', 'title'].find(n => tMeta.some(f => f.name === n));
-      if (labelField) {
-        const tRes = await resourceService.queryModel(tenant, 'DataFlowElementType', ['id', labelField], '{}');
-        for (const r of tRes?.records ?? []) if (r.id) cache.typeLabels.set(r.id, r[labelField]);
-      }
-    } catch { /* leave labels empty — types degrade to "other" */ }
-  }
-
-  return adaptFlowElements(flow.name, flow.type, res.records, available, cache.typeLabels);
+/**
+ * Read a screen's elements (`ScreenElement`) over `system_query_model` and adapt
+ * them to a ScreenModel for compliance analysis. System-tools only.
+ */
+async function fetchScreenModel(
+  resourceService: TenantDataService,
+  tenant: import('./types').Tenant,
+  screen: { id: string; name: string },
+  signal?: AbortSignal
+) {
+  const where = JSON.stringify({ screenId: { _eq: screen.id } });
+  const res = await resourceService.queryModel(tenant, 'ScreenElement', ['id', 'name', 'type', 'componentName', 'label', 'configuration'], where, 'application', signal).catch(() => null);
+  if (!res?.raw) return null;
+  const rows = decodeTronPayload(res.raw);
+  if (rows.length === 0) return null;
+  return buildScreenModel(screen.name, rows);
 }
 
 /** Register the ERD diagram commands (single model, module, whole application). */
@@ -1299,7 +1398,7 @@ function buildCreateToolPrompt(enterpriseName: string, tenantName: string, envir
     ``,
     `Please walk me through building this tool step by step. Specifically:`,
     `1. Ask me what the tool should do, its inputs, and its outputs.`,
-    `2. Use the Fuuz MCP tools to gather the context you need — e.g. \`system_list_models\` and \`system_query_model\` to find relevant data models, \`system_list_model_fields\` (and \`system_list_model_references\`) for schemas and relationships, and \`data_flow_data_flow_details\` / \`data_flow_dataflow_diagram_flow\` to learn from existing data flows.`,
+    `2. Use the Fuuz MCP tools to gather the context you need. **Prefer the platform \`system_*\` tools** — \`system_list_models\` and \`system_query_model\` to find relevant data models and to read existing flows/screens (query \`DataFlow\`, \`DataFlowElement\`, \`Screen\`, \`ScreenElement\`), and \`system_list_model_fields\` / \`system_list_model_references\` for schemas and relationships. The \`data_flow_*\` tools are themselves user-built flows and may be unreliable or incomplete — don't depend on them.`,
     `2. Propose a data-flow design (nodes, inputs, transforms, outputs) and confirm it with me before making changes.`,
     `3. Create or update the data flow using \`system_data_flow_mutations\`, then summarize what was created and how to deploy/test it.`,
     ``,

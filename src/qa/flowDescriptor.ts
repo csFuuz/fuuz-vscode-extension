@@ -1,110 +1,90 @@
 /**
- * Adapt `DataFlowElement` records (a flow's nodes, read over MCP) into the
- * analyzer's {@link FlowGraph}. The exact field names vary, so the command
- * discovers the model's fields at runtime and passes the ones that exist; this
- * module is the pure mapping (testable) plus the field-selection + type
- * normalization helpers.
+ * Adapt decoded `DataFlowElement` records into the analyzer's {@link FlowGraph}.
+ * `DataFlowElement` is a stable platform (system) model, so the field set is
+ * known: `id, name, type, description, configuration`. The `type` string maps to
+ * a {@link FlowNodeKind} and the type-specific `configuration` object yields the
+ * per-node details the rules need. Pure + testable.
  */
-import { FlowGraph, FlowNode, FlowNodeType } from './flowTypes';
+import { FlowGraph, FlowNode, FlowNodeKind, FlowVersionInfo } from './flowTypes';
 
-type Rec = Record<string, string>;
+/** The DataFlowElement fields to request over MCP. */
+export const FLOW_ELEMENT_FIELDS = ['id', 'name', 'type', 'description', 'configuration'];
 
-/** Candidate field names per concept (first that exists wins). */
-export const FLOW_FIELD_CANDIDATES = {
-  name: ['name', 'label', 'title'],
-  description: ['description', 'desc', 'notes'],
-  typeLabel: ['dataFlowElementType', 'elementType', 'nodeType', 'type', 'kind'],
-  typeId: ['dataFlowElementTypeId', 'elementTypeId'],
-  script: ['script', 'code', 'body', 'scriptBody', 'source'],
-  branchCount: ['branchCount', 'branches'],
-  collectCount: ['collectCount', 'payloads', 'payloadCount'],
-  query: ['query', 'queryModel', 'savedQueryId'],
-  flowFk: ['dataFlowId', 'dataFlowVersionId'],
-} as const;
-
-const first = (rec: Rec, names: readonly string[]): string | undefined => {
-  for (const n of names) if (rec[n] != null && rec[n] !== '') return rec[n];
-  return undefined;
+const KIND_BY_TYPE: Record<string, FlowNodeKind> = {
+  request: 'entry', schedule: 'entry', when: 'entry', dataChanges: 'entry',
+  fork: 'fork', collect: 'collect', ifElse: 'ifElse', switch: 'switch',
+  javascriptTransform: 'inlineScript', transform: 'jsonata', savedTransformV2: 'savedTransform',
+  query: 'query', mutate: 'mutate', http: 'http',
+  tryCatch: 'tryCatch', throwError: 'throwError', response: 'response',
+  executeFlow: 'executeFlow', validate: 'validate', log: 'log',
 };
-const firstExisting = (available: Set<string>, names: readonly string[]): string | undefined =>
-  names.find(n => available.has(n));
 
-/** The DataFlowElement fields to request, given what the model actually exposes. */
-export function chooseFlowFields(available: string[]): string[] {
-  const set = new Set(available);
-  const wanted = new Set<string>(['id']);
-  for (const names of Object.values(FLOW_FIELD_CANDIDATES)) {
-    const f = firstExisting(set, names);
-    if (f) wanted.add(f);
+const asObj = (v: unknown): Record<string, any> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : {});
+const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined);
+const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
+
+/** Map one decoded DataFlowElement row to a FlowNode. */
+export function adaptFlowElement(row: Record<string, any>, i: number): FlowNode {
+  const rawType = String(row.type ?? '').trim();
+  const kind = KIND_BY_TYPE[rawType] ?? 'other';
+  const cfg = asObj(row.configuration);
+
+  const node: FlowNode = {
+    id: String(row.id ?? `el-${i}`),
+    name: str(row.name),
+    description: str(row.description),
+    rawType,
+    kind,
+    config: cfg,
+  };
+
+  switch (kind) {
+    case 'entry':
+      node.entryType = rawType;
+      break;
+    case 'fork':
+      node.branchCount = arr(cfg.branches).length || undefined;
+      break;
+    case 'switch':
+      node.branchCount = arr(cfg.branches).length || undefined;
+      break;
+    case 'collect': {
+      const n = Number(cfg.batchCount);
+      node.collectBatchCount = Number.isFinite(n) ? n : undefined;
+      break;
+    }
+    case 'inlineScript':
+    case 'jsonata':
+      node.script = str(cfg.transform) ?? str(cfg.script);
+      break;
+    case 'savedTransform': {
+      const ref = asObj(cfg.transformId);
+      node.savedRef = { id: str(ref.id), name: str(ref.name) ?? str(ref.label), language: str(ref.scriptLanguageId) ?? str(cfg.transformScriptLanguage) };
+      node.requestTransform = str(cfg.requestTransform);
+      break;
+    }
+    case 'query':
+      node.query = str(cfg.query);
+      node.variablesTransform = str(cfg.variablesTransform);
+      node.queryApi = str(cfg.api);
+      break;
+    case 'http':
+      node.connectionName = str(cfg.connectionName);
+      break;
   }
-  return [...wanted];
+  return node;
 }
 
-/** The foreign-key field linking an element to its flow (for the `where` filter). */
-export function flowFkField(available: string[]): string | undefined {
-  return firstExisting(new Set(available), FLOW_FIELD_CANDIDATES.flowFk);
-}
-
-/** Normalize a raw node-type label to a {@link FlowNodeType}. */
-export function normalizeNodeType(raw: string | undefined): FlowNodeType {
-  const s = (raw ?? '').toLowerCase();
-  if (/broadcast/.test(s)) return 'broadcast';
-  if (/collect/.test(s)) return 'collect';
-  if (/branch|split|switch|condition|decision/.test(s)) return 'branch';
-  if (/delay|wait|sleep/.test(s)) return 'delay';
-  if (/integrat/.test(s)) return 'integration';
-  if (/error|catch|fault|exception/.test(s)) return 'errorResponse';
-  if (/script|code|function|transform/.test(s)) return 'script';
-  if (/quer|read|fetch|select|lookup/.test(s)) return 'query';
-  if (/start|trigger|input|begin|entry/.test(s)) return 'start';
-  if (/output|response|return|end|result|publish/.test(s)) return 'output';
-  return 'other';
-}
-
-const toNum = (v: string | undefined): number | undefined => {
-  if (v == null || v === '') return undefined;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
-};
-
-/**
- * Map element rows to a FlowGraph. `typeLabels` resolves a `*TypeId` to a
- * human label when the element only carries the FK.
- */
-export function adaptFlowElements(
-  flowName: string,
-  flowType: string | undefined,
-  rows: Rec[],
-  available: string[],
-  typeLabels?: Map<string, string>
+/** Map all of a flow's element rows + metadata into a FlowGraph. */
+export function adaptFlow(
+  meta: { id: string; name: string; type?: string; versions?: FlowVersionInfo[] },
+  rows: Record<string, any>[]
 ): FlowGraph {
-  const set = new Set(available);
-  const fName = firstExisting(set, FLOW_FIELD_CANDIDATES.name);
-  const fDesc = firstExisting(set, FLOW_FIELD_CANDIDATES.description);
-  const fTypeLabel = firstExisting(set, FLOW_FIELD_CANDIDATES.typeLabel);
-  const fTypeId = firstExisting(set, FLOW_FIELD_CANDIDATES.typeId);
-  const fScript = firstExisting(set, FLOW_FIELD_CANDIDATES.script);
-  const fQuery = firstExisting(set, FLOW_FIELD_CANDIDATES.query);
-  const fBranch = firstExisting(set, FLOW_FIELD_CANDIDATES.branchCount);
-  const fCollect = firstExisting(set, FLOW_FIELD_CANDIDATES.collectCount);
-
-  const nodes: FlowNode[] = rows.map((r, i) => {
-    const rawType =
-      (fTypeLabel && r[fTypeLabel]) ||
-      (fTypeId && typeLabels?.get(r[fTypeId])) ||
-      (fTypeId && r[fTypeId]) ||
-      '';
-    return {
-      id: r.id || `el-${i}`,
-      name: fName ? first(r, [fName]) : undefined,
-      description: fDesc ? first(r, [fDesc]) : undefined,
-      type: normalizeNodeType(rawType),
-      rawType: rawType || undefined,
-      script: fScript ? first(r, [fScript]) : undefined,
-      query: fQuery ? first(r, [fQuery]) : undefined,
-      branchCount: fBranch ? toNum(r[fBranch]) : undefined,
-      collectCount: fCollect ? toNum(r[fCollect]) : undefined,
-    };
-  });
-  return { name: flowName, type: flowType, nodes };
+  return {
+    id: meta.id,
+    name: meta.name,
+    type: meta.type,
+    versions: meta.versions,
+    nodes: rows.map(adaptFlowElement),
+  };
 }

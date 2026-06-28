@@ -2,6 +2,45 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## 0.35.0
+
+- **View saved script/query content from the tree**: click a Script or Query in the
+  resource tree (or use its inline "View Content" button) to open its real body in a
+  read-only editor — `SavedTransform.transform` for scripts (opened as JavaScript /
+  JSONata) and `SavedQuery.queryText` for queries (GraphQL). Fetched on demand over the
+  platform `system_query_model` tool via a read-only `fuuz:` virtual document.
+
+## 0.34.0
+
+- **Flow compliance rebuilt on the real Fuuz node model** (validated against a live
+  tenant). The analyzers now read `DataFlowElement` over the platform
+  `system_query_model` tool and decode each node's real `configuration` (a new
+  recursive TRON/JSON decoder), reasoning about the actual node types — `request`,
+  `fork`, `collect`, `ifElse`, `switch`, `javascriptTransform`, `transform`,
+  `savedTransformV2`, `query`, `http`, `tryCatch`, `validate`, … New & revised rules:
+  - **Entry points** surfaced — multiple `request` nodes = separate paths (info, not an error).
+  - **Fork/collect**: forks need NOT always recombine (parallel terminal paths are fine);
+    a collect's batch count should match its fork's branch count; orphan collects flagged.
+  - **Payload contract**: a saved script/query fed the whole context (`# Changelog
+
+All notable changes to **Fuuz for VS Code**.
+
+ pass-through) with
+    no `validate` node — escalated when the saved transform declares an input schema.
+  - **Query scoping**: an unfiltered query (no `where` / variable transform) is flagged on
+    master/transactional models (cross-referenced against `DataModel` type + estimated record
+    count), exempted for `setup` models; large models recommend a pagination cycle.
+  - **Query page size**: `first: > 500` (and nested result sets) flagged as long-running.
+  - `$integrate` in scripts → http (integration) node; hard-coded credentials; long inline
+    scripts → saved script; error handling; node/flow naming; release-notes (devops) gaps.
+- **Screen compliance** (new): **Check Screen Compliance** on a screen — flags > 5 action
+  buttons, > 75 elements, oversized element configuration, inline transforms on table columns
+  / form fields (move to table/form transforms), ambiguous names, and missing version notes.
+  Folded into **Audit Entire Tenant** alongside models + flows.
+- **System tools only**: all analysis reads platform `system_*` tools; the extension no longer
+  depends on user-built `data_flow_*` flows (which can be unreliable/incomplete). The guided
+  tool-builder prompt was updated to say the same.
+
 ## 0.33.0
 
 - **Fix Claude /mcp auth errors from a shadowing project .mcp.json**: a project

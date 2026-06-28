@@ -231,6 +231,10 @@ function node(label: string, kind: string, data: any, description?: string): Res
     : vscode.TreeItemCollapsibleState.None;
   const item = new ResourceItem(label, state, kind, data);
   if (description) item.description = description;
+  // Saved scripts/queries open their real content in a read-only editor on click.
+  if (kind === 'script' || kind === 'graphqlOp') {
+    item.command = { command: 'fuuz.openResourceContent', title: 'View Content', arguments: [item] };
+  }
   return item;
 }
 

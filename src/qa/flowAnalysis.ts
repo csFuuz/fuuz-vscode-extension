@@ -1,71 +1,99 @@
 /**
- * Pure flow-diagram compliance analyzers. Each returns a {@link RuleResult}
- * (assertions run / passed + findings) so results render in the shared
- * compliance report. No VS Code/Node imports — fully unit-testable.
+ * Pure flow-diagram compliance analyzers, grounded in the real Fuuz node model
+ * ({@link ./flowTypes}). Each returns a {@link RuleResult} so results render in
+ * the shared compliance report. No VS Code/Node imports — fully unit-testable.
  *
- * Rules: broadcast surfacing, branch/collect balance, node naming + missing
- * descriptions, long scripts → saved script, try/catch + error-response nodes,
- * delay warnings, `$integrate` in scripts → integration node, hard-coded
- * credentials, and common script anti-patterns. Cross-flow: similar queries →
- * saved query, repeated scripts → saved script.
+ * Single-flow rules:
+ *  - entry points surfaced (multiple `request` nodes = separate paths)
+ *  - fork/collect balance (forks need NOT always recombine; collect batchCount
+ *    should match its fork's branch count; orphan collects flagged)
+ *  - saved script/query has a payload contract (validate node or shaping
+ *    requestTransform — not a `$` pass-through into an input-schema'd transform)
+ *  - query scoping (unfiltered non-setup queries → filter or paginate) and
+ *    page-size / nested-result warnings (`first: > 500`)
+ *  - node naming + descriptions + uniqueness, long inline scripts → saved script,
+ *    `$integrate` in scripts → http node, hard-coded credentials, error handling,
+ *    flow naming + release-notes (devops) gaps
+ * Cross-flow: repeated inline queries → saved query; repeated inline scripts →
+ * saved script.
  */
 import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER } from './complianceTypes';
-import { FlowGraph, FlowNode } from './flowTypes';
+import { FlowGraph, FlowNode, FlowAnalysisContext } from './flowTypes';
+import { lookupModel } from './modelContext';
+import { judgeName } from './naming';
 
 const rule = (ruleId: string, title: string, checks: number, passed: number, findings: Finding[]): RuleResult =>
   ({ ruleId, title, checks, passed, findings });
 
 const where = (n: FlowNode) => n.name || n.id;
-const scripts = (g: FlowGraph) => g.nodes.filter(n => n.type === 'script' && typeof n.script === 'string');
-const byType = (g: FlowGraph, t: FlowNode['type']) => g.nodes.filter(n => n.type === t);
-
-/** Default/auto-looking node names that should be made meaningful. */
-const AUTO_NAME = /^(node|element|new\s*node|untitled|step|script|query|branch|collect|broadcast)[\s_-]*\d*$/i;
+const byKind = (g: FlowGraph, k: FlowNode['kind']) => g.nodes.filter(n => n.kind === k);
+/** Inline scripts whose body we can inspect (JS + JSONata). */
+const inlineScripts = (g: FlowGraph) => g.nodes.filter(n => (n.kind === 'inlineScript' || n.kind === 'jsonata') && typeof n.script === 'string' && n.script.trim());
 
 /** Hard-coded credential assignment, e.g. `apiKey = "abc123"`. */
 const CRED_LITERAL = /\b(api[_-]?key|secret|client[_-]?secret|password|passwd|pwd|passphrase|token|bearer|private[_-]?key|access[_-]?key|authorization)\b\s*[:=]\s*['"`][^'"`]{4,}['"`]/i;
 
+const PASS_THROUGH = (t: string | undefined) => { const s = (t ?? '').trim(); return s === '' || s === '$'; };
+
+const LARGE_RECORD_COUNT = 5000;
+const BIG_PAGE = 500;
+
 // --- single-flow rules ----------------------------------------------------
 
-/** Surface broadcast nodes (informational — they fan out to other flows). */
-function broadcastUsage(g: FlowGraph): RuleResult {
-  const b = byType(g, 'broadcast');
-  const findings: Finding[] = b.map(n => ({
-    ruleId: 'flow-broadcast', severity: 'info',
-    message: `Broadcast node "${where(n)}" — verify downstream subscribers are intended`, where: where(n),
-  }));
-  return rule('flow-broadcast', 'Broadcast nodes surfaced', 1, 1, findings);
+/** Surface entry points. Multiple `request` nodes = separate entry paths. */
+function entryPoints(g: FlowGraph): RuleResult {
+  const entries = byKind(g, 'entry');
+  const requests = entries.filter(n => n.entryType === 'request');
+  const findings: Finding[] = [];
+  if (requests.length > 1) {
+    findings.push({
+      ruleId: 'flow-entry-points', severity: 'info',
+      message: `${requests.length} request entry points (separate paths): ${requests.map(where).join(', ')} — confirm each path is intended`,
+    });
+  }
+  for (const e of entries.filter(n => n.entryType && n.entryType !== 'request')) {
+    findings.push({ ruleId: 'flow-entry-points', severity: 'info', message: `Trigger entry "${where(e)}" (${e.entryType})`, where: where(e) });
+  }
+  return rule('flow-entry-points', 'Entry points surfaced', 1, 1, findings);
 }
 
-/** Each branch should be matched by a collect that gathers the same number of payloads. */
-function branchCollectBalance(g: FlowGraph): RuleResult {
-  const branches = byType(g, 'branch');
-  const collects = byType(g, 'collect');
+/**
+ * Forks fan out to parallel paths; they need NOT always recombine. We surface
+ * forks, flag a collect whose declared batch count doesn't match its fork's
+ * branch count, and flag orphan collects (a collect with no fork).
+ */
+function forkCollectBalance(g: FlowGraph): RuleResult {
+  const forks = byKind(g, 'fork');
+  const collects = byKind(g, 'collect');
   const findings: Finding[] = [];
-  let checks = 0;
-  let passed = 0;
+  let checks = 0, passed = 0;
 
-  if (branches.length || collects.length) {
-    checks++;
-    if (branches.length === collects.length) passed++;
-    else findings.push({
-      ruleId: 'flow-branch-collect', severity: 'error',
-      message: `${branches.length} branch node(s) but ${collects.length} collect node(s) — each branch needs a matching collect`,
-      fix: 'Pair every branch with a collect (or remove the orphan).',
-    });
+  for (const f of forks) {
+    findings.push({ ruleId: 'flow-fork-collect', severity: 'info', message: `Fork "${where(f)}" fans out to ${f.branchCount ?? '?'} parallel path(s)`, where: where(f) });
   }
-  const totalBranches = branches.reduce((n, b) => n + (b.branchCount ?? 0), 0);
-  const totalCollect = collects.reduce((n, c) => n + (c.collectCount ?? 0), 0);
-  if (totalBranches || totalCollect) {
+
+  // Orphan collect: a collect with no fork in the flow.
+  if (collects.length && forks.length === 0) {
     checks++;
-    if (totalBranches === totalCollect) passed++;
-    else findings.push({
-      ruleId: 'flow-branch-collect', severity: 'error',
-      message: `Branches fan out to ${totalBranches} payload(s) but collects gather ${totalCollect} — counts must match`,
-      fix: 'Make the collect node(s) gather exactly the number of branched payloads.',
-    });
+    findings.push({ ruleId: 'flow-fork-collect', severity: 'warn', message: `${collects.length} collect node(s) but no fork — a collect joins forked paths`, fix: 'Remove the orphan collect or add the fork it should join.' });
+  } else if (collects.length || forks.length) {
+    checks++; passed++;
   }
-  return rule('flow-branch-collect', 'Branch/collect payloads balance', checks, passed, findings);
+
+  // When there's a single fork+collect pair, the join count should match the fan-out.
+  if (forks.length === 1 && collects.length === 1) {
+    checks++;
+    const fan = forks[0].branchCount ?? 0;
+    const join = collects[0].collectBatchCount ?? 0;
+    if (fan && join && fan !== join) {
+      findings.push({
+        ruleId: 'flow-fork-collect', severity: 'warn',
+        message: `Fork "${where(forks[0])}" fans out ${fan} branch(es) but collect "${where(collects[0])}" expects ${join}`,
+        where: where(collects[0]), fix: 'Make the collect batch count match the number of forked branches.',
+      });
+    } else passed++;
+  }
+  return rule('flow-fork-collect', 'Fork/collect balance (parallel paths may stay separate)', checks || 1, checks ? passed : 1, findings);
 }
 
 /** Every node has a meaningful (non-default) name. */
@@ -73,15 +101,11 @@ function nodeNaming(g: FlowGraph): RuleResult {
   const findings: Finding[] = [];
   let passed = 0;
   for (const n of g.nodes) {
-    const name = (n.name ?? '').trim();
-    if (name.length >= 3 && !AUTO_NAME.test(name)) passed++;
-    else findings.push({
-      ruleId: 'flow-node-naming', severity: 'warn',
-      message: name ? `Node "${name}" has a default/unclear name` : `Node ${n.id} has no name`,
-      where: where(n), fix: 'Rename to describe what the node does (use “Rename Flow Nodes”).',
-    });
+    const v = judgeName(n.name, 'Node');
+    if (!v.ambiguous) passed++;
+    else findings.push({ ruleId: 'flow-node-naming', severity: 'warn', message: v.reason!, where: where(n), fix: 'Rename to describe what the node does (use “Rename Flow Nodes”).' });
   }
-  return rule('flow-node-naming', 'Nodes are clearly named', g.nodes.length, passed, findings);
+  return rule('flow-node-naming', 'Nodes are clearly named', g.nodes.length || 1, g.nodes.length ? passed : 1, findings);
 }
 
 /** Every node has a description. */
@@ -90,94 +114,9 @@ function nodeDescriptions(g: FlowGraph): RuleResult {
   let passed = 0;
   for (const n of g.nodes) {
     if ((n.description ?? '').trim()) passed++;
-    else findings.push({ ruleId: 'flow-node-descriptions', severity: 'info', message: `Node "${where(n)}" has no description`, where: where(n), fix: 'Add a short description.' });
+    else findings.push({ ruleId: 'flow-node-descriptions', severity: 'info', message: `Node "${where(n)}" has no description`, where: where(n), fix: 'Add a short description (use “Add Node Descriptions”).' });
   }
-  return rule('flow-node-descriptions', 'Nodes have descriptions', g.nodes.length, passed, findings);
-}
-
-/** Long scripts (>100 lines) should become saved scripts. */
-function longScripts(g: FlowGraph): RuleResult {
-  const ss = scripts(g);
-  const findings: Finding[] = [];
-  let passed = 0;
-  for (const n of ss) {
-    const lines = n.script!.split('\n').length;
-    if (lines <= 100) passed++;
-    else findings.push({
-      ruleId: 'flow-long-scripts', severity: 'warn',
-      message: `Script node "${where(n)}" is ${lines} lines`, where: where(n),
-      fix: 'Convert to a Saved Script and reference it, for reuse + testability.',
-    });
-  }
-  return rule('flow-long-scripts', 'Script nodes are reasonably sized', ss.length, passed, findings);
-}
-
-/** Flow has try/catch or an error-response node. */
-function errorHandling(g: FlowGraph): RuleResult {
-  const hasErrorNode = byType(g, 'errorResponse').length > 0;
-  const hasTryCatch = scripts(g).some(n => /\btry\b[\s\S]*\bcatch\b/.test(n.script!));
-  const ok = hasErrorNode || hasTryCatch;
-  return rule('flow-error-handling', 'Has error handling (try/catch or error-response node)', 1, ok ? 1 : 0,
-    ok ? [] : [{ ruleId: 'flow-error-handling', severity: 'warn', message: 'No try/catch in scripts and no error-response node', fix: 'Add an error-response node and/or wrap risky script logic in try/catch.' }]);
-}
-
-/** Delay nodes are flagged as a warning. */
-function delayNodes(g: FlowGraph): RuleResult {
-  const d = byType(g, 'delay');
-  const findings: Finding[] = d.map(n => ({
-    ruleId: 'flow-delay', severity: 'warn',
-    message: `Delay node "${where(n)}" — delays can stall throughput; confirm it's necessary`, where: where(n),
-  }));
-  return rule('flow-delay', 'No unexpected delay nodes', 1, d.length ? 0 : 1, findings);
-}
-
-/** Script nodes must not call `$integrate` — use an integration node + connection. */
-function integrateInScript(g: FlowGraph): RuleResult {
-  const ss = scripts(g);
-  const findings: Finding[] = [];
-  let passed = 0;
-  for (const n of ss) {
-    if (!n.script!.includes('$integrate')) passed++;
-    else findings.push({
-      ruleId: 'flow-integrate-in-script', severity: 'error',
-      message: `Script node "${where(n)}" calls $integrate`, where: where(n),
-      fix: 'Replace the in-script $integrate with a proper Integration node + Connection.',
-    });
-  }
-  return rule('flow-integrate-in-script', 'Scripts do not call $integrate', ss.length, passed, findings);
-}
-
-/** Hard-coded credentials in scripts are a security risk. */
-function credentialsInScript(g: FlowGraph): RuleResult {
-  const ss = scripts(g);
-  const findings: Finding[] = [];
-  let passed = 0;
-  for (const n of ss) {
-    if (!CRED_LITERAL.test(n.script!)) passed++;
-    else findings.push({
-      ruleId: 'flow-credentials', severity: 'error',
-      message: `Script node "${where(n)}" appears to hard-code a credential (key/token/password)`, where: where(n),
-      fix: 'Move secrets to a Connection; never embed api keys/tokens/passwords in scripts.',
-    });
-  }
-  return rule('flow-credentials', 'No hard-coded credentials in scripts', ss.length, passed, findings);
-}
-
-/** Misc script anti-patterns: hard-coded URLs and leftover console logging. */
-function scriptAntiPatterns(g: FlowGraph): RuleResult {
-  const ss = scripts(g);
-  const findings: Finding[] = [];
-  let checks = 0;
-  let passed = 0;
-  for (const n of ss) {
-    checks++;
-    const url = /https?:\/\/[^\s'"`)]+/.test(n.script!);
-    const log = /console\.(log|debug|info|warn|error)\s*\(/.test(n.script!);
-    if (!url && !log) { passed++; continue; }
-    if (url) findings.push({ ruleId: 'flow-script-antipatterns', severity: 'warn', message: `Script node "${where(n)}" hard-codes a URL`, where: where(n), fix: 'Use a Connection / config value instead of a literal URL.' });
-    if (log) findings.push({ ruleId: 'flow-script-antipatterns', severity: 'info', message: `Script node "${where(n)}" leaves console logging in`, where: where(n), fix: 'Remove console.* or use flow logging.' });
-  }
-  return rule('flow-script-antipatterns', 'Scripts avoid hard-coded URLs / stray logging', checks, passed, findings);
+  return rule('flow-node-descriptions', 'Nodes have descriptions', g.nodes.length || 1, g.nodes.length ? passed : 1, findings);
 }
 
 /** Node names are unique within the flow. */
@@ -192,37 +131,241 @@ function duplicateNames(g: FlowGraph): RuleResult {
     dups.map(d => ({ ruleId: 'flow-duplicate-names', severity: 'warn', message: `Duplicate node name "${d}"`, fix: 'Give each node a distinct name.' })));
 }
 
+/** Long inline scripts (>100 lines) should become saved scripts. */
+function longScripts(g: FlowGraph): RuleResult {
+  const ss = byKind(g, 'inlineScript').filter(n => typeof n.script === 'string');
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const n of ss) {
+    const lines = n.script!.split('\n').length;
+    if (lines <= 100) passed++;
+    else findings.push({ ruleId: 'flow-long-scripts', severity: 'warn', message: `Script node "${where(n)}" is ${lines} lines`, where: where(n), fix: 'Convert to a Saved Script and reference it (reuse + testability + a declared input schema).' });
+  }
+  return rule('flow-long-scripts', 'Inline scripts are reasonably sized', ss.length || 1, ss.length ? passed : 1, findings);
+}
+
+/**
+ * A saved script/query should be fed a payload contract. A `savedTransformV2`
+ * whose requestTransform is a `$` pass-through (no shaping) AND whose flow has no
+ * `validate` node is a risk — escalated when the referenced saved transform
+ * declares an input schema.
+ */
+function savedContract(g: FlowGraph, ctx?: FlowAnalysisContext): RuleResult {
+  const saved = byKind(g, 'savedTransform');
+  const hasValidate = byKind(g, 'validate').length > 0;
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const n of saved) {
+    const passthrough = PASS_THROUGH(n.requestTransform);
+    const info = n.savedRef?.id ? ctx?.savedTransforms?.get(n.savedRef.id) : undefined;
+    const declaresContract = info?.hasInputSchema === true;
+    if (!passthrough || hasValidate) { passed++; continue; }
+    findings.push({
+      ruleId: 'flow-saved-contract',
+      severity: declaresContract ? 'warn' : 'info',
+      message: declaresContract
+        ? `Saved script "${n.savedRef?.name ?? where(n)}" receives the whole context ($) but declares an input schema — no payload contract`
+        : `Saved script/query "${where(n)}" receives the whole context ($) with no validation`,
+      where: where(n),
+      fix: 'Add a Validate (payload-contract) node before it, or a request transform that maps to the saved transform’s input schema.',
+    });
+  }
+  return rule('flow-saved-contract', 'Saved scripts/queries get a payload contract', saved.length || 1, saved.length ? passed : 1, findings);
+}
+
+/** Root model field tokens selected at the top level of a GraphQL query. */
+export function rootModelsOf(query: string): string[] {
+  const out: string[] = [];
+  let depth = 0, i = 0;
+  const open = query.indexOf('{');
+  if (open < 0) return out;
+  i = open;
+  for (; i < query.length; i++) {
+    const ch = query[i];
+    if (ch === '{') { depth++; continue; }
+    if (ch === '}') { depth--; continue; }
+    if (depth === 1 && /[A-Za-z_]/.test(ch)) {
+      // read an identifier; it may be `alias: model` or `model`
+      let j = i; let first = '';
+      while (j < query.length && /[A-Za-z0-9_]/.test(query[j])) first += query[j++];
+      let k = j; while (k < query.length && /\s/.test(query[k])) k++;
+      let model = first;
+      if (query[k] === ':') {
+        k++; while (k < query.length && /\s/.test(query[k])) k++;
+        let second = ''; while (k < query.length && /[A-Za-z0-9_]/.test(query[k])) second += query[k++];
+        model = second || first;
+        while (k < query.length && /\s/.test(query[k])) k++;
+        j = k;
+      }
+      // only a root selection if followed by `(` (args) or `{` (subselection)
+      let m = j; while (m < query.length && /\s/.test(query[m])) m++;
+      if ((query[m] === '(' || query[m] === '{') && model) out.push(model);
+      i = j - 1;
+    }
+  }
+  return [...new Set(out)];
+}
+
+/**
+ * Query scoping: a query with no variable transform and no `where:` filter
+ * returns everything. That's fine for `setup` models (limited records) but a
+ * risk for master/transactional models — recommend a filter or a pagination
+ * cycle, escalated when the model is known to be large.
+ */
+function queryScoping(g: FlowGraph, ctx?: FlowAnalysisContext): RuleResult {
+  const queries = byKind(g, 'query');
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const n of queries) {
+    const q = n.query ?? '';
+    const hasVarTransform = !PASS_THROUGH(n.variablesTransform);
+    const hasWhere = /\bwhere\s*:/.test(q) && !/\bwhere\s*:\s*\{\s*\}/.test(q);
+    if (hasWhere || hasVarTransform) { passed++; continue; }
+
+    const roots = rootModelsOf(q);
+    const infos = roots.map(r => lookupModel(ctx, r)).filter(Boolean) as { type?: string; recordCount?: number; name: string }[];
+    const allSetup = infos.length > 0 && infos.every(m => m.type === 'setup');
+    if (allSetup) { passed++; continue; } // limited records — unfiltered is acceptable
+
+    const large = infos.find(m => (m.recordCount ?? 0) > LARGE_RECORD_COUNT);
+    const target = roots.length ? roots.join(', ') : 'a model';
+    findings.push({
+      ruleId: 'flow-query-scoping',
+      severity: large ? 'error' : 'warn',
+      message: large
+        ? `Unfiltered query "${where(n)}" on ${large.name} (~${large.recordCount} records) — will return everything`
+        : `Unfiltered query "${where(n)}" (no where filter / variable transform) on ${target}`,
+      where: where(n),
+      fix: 'Add a where filter scoped to the request, or implement a pagination cycle (store each page in context, track nextPage, loop until exhausted). Exception: setup-type models.',
+    });
+  }
+  return rule('flow-query-scoping', 'Queries are scoped (or paginated) on non-setup models', queries.length || 1, queries.length ? passed : 1, findings);
+}
+
+/** Large page sizes / nested result sets make long-running queries. */
+function queryPageSize(g: FlowGraph): RuleResult {
+  const queries = byKind(g, 'query');
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const n of queries) {
+    const q = n.query ?? '';
+    const firsts = [...q.matchAll(/\bfirst\s*:\s*(\d+)/g)].map(m => Number(m[1]));
+    const maxFirst = firsts.length ? Math.max(...firsts) : 0;
+    const nested = (q.match(/edges\s*\{/g)?.length ?? 0) > 1;
+    if (maxFirst <= BIG_PAGE) { passed++; continue; }
+    findings.push({
+      ruleId: 'flow-query-pagesize', severity: 'warn',
+      message: `Query "${where(n)}" requests first: ${maxFirst} (>${BIG_PAGE})${nested ? ' with nested result sets' : ''} — potential long-running query`,
+      where: where(n),
+      fix: nested ? 'Narrow the page size and/or paginate; avoid deep nested edges in one pull.' : 'Lower the page size or paginate the results.',
+    });
+  }
+  return rule('flow-query-pagesize', 'Queries avoid oversized result sets', queries.length || 1, queries.length ? passed : 1, findings);
+}
+
+/** Flow has error handling: a try/catch node, or try/catch in an inline script. */
+function errorHandling(g: FlowGraph): RuleResult {
+  const hasTryCatchNode = byKind(g, 'tryCatch').length > 0;
+  const hasScriptTryCatch = inlineScripts(g).some(n => /\btry\b[\s\S]*\bcatch\b/.test(n.script!));
+  const ok = hasTryCatchNode || hasScriptTryCatch;
+  return rule('flow-error-handling', 'Has error handling (try/catch node or in-script try/catch)', 1, ok ? 1 : 0,
+    ok ? [] : [{ ruleId: 'flow-error-handling', severity: 'warn', message: 'No try/catch node and no in-script try/catch', fix: 'Wrap risky logic in a Try/Catch node and return an error response.' }]);
+}
+
+/** Inline scripts must not call `$integrate` — use an http node + Connection. */
+function integrateInScript(g: FlowGraph): RuleResult {
+  const ss = inlineScripts(g);
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const n of ss) {
+    if (!/\$integrate\b/.test(n.script!)) passed++;
+    else findings.push({ ruleId: 'flow-integrate-in-script', severity: 'error', message: `Script node "${where(n)}" calls $integrate`, where: where(n), fix: 'Replace in-script $integrate with an HTTP (integration) node + Connection.' });
+  }
+  return rule('flow-integrate-in-script', 'Scripts do not call $integrate', ss.length || 1, ss.length ? passed : 1, findings);
+}
+
+/** Hard-coded credentials in inline scripts are a security risk. */
+function credentialsInScript(g: FlowGraph): RuleResult {
+  const ss = inlineScripts(g);
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const n of ss) {
+    if (!CRED_LITERAL.test(n.script!)) passed++;
+    else findings.push({ ruleId: 'flow-credentials', severity: 'error', message: `Script node "${where(n)}" appears to hard-code a credential (key/token/password)`, where: where(n), fix: 'Move secrets to a Connection; never embed api keys/tokens/passwords in scripts.' });
+  }
+  return rule('flow-credentials', 'No hard-coded credentials in scripts', ss.length || 1, ss.length ? passed : 1, findings);
+}
+
+/** Misc inline-script anti-patterns: hard-coded URLs and leftover console logging. */
+function scriptAntiPatterns(g: FlowGraph): RuleResult {
+  const ss = inlineScripts(g);
+  const findings: Finding[] = [];
+  let checks = 0, passed = 0;
+  for (const n of ss) {
+    checks++;
+    const url = /https?:\/\/[^\s'"`)]+/.test(n.script!);
+    const log = /console\.(log|debug|info|warn|error)\s*\(/.test(n.script!);
+    if (!url && !log) { passed++; continue; }
+    if (url) findings.push({ ruleId: 'flow-script-antipatterns', severity: 'warn', message: `Script node "${where(n)}" hard-codes a URL`, where: where(n), fix: 'Use a Connection / config value instead of a literal URL.' });
+    if (log) findings.push({ ruleId: 'flow-script-antipatterns', severity: 'info', message: `Script node "${where(n)}" leaves console logging in`, where: where(n), fix: 'Remove console.* or use flow logging.' });
+  }
+  return rule('flow-script-antipatterns', 'Scripts avoid hard-coded URLs / stray logging', checks || 1, checks ? passed : 1, findings);
+}
+
+/** Flow name is clear (not a placeholder / ambiguous). */
+function flowNaming(g: FlowGraph): RuleResult {
+  const v = judgeName(g.name, 'Flow');
+  return rule('flow-naming', 'Flow is clearly named', 1, v.ambiguous ? 0 : 1,
+    v.ambiguous ? [{ ruleId: 'flow-naming', severity: 'warn', message: v.reason!, fix: 'Rename the flow to describe its purpose.' }] : []);
+}
+
+/** Latest deployed version should carry release/version notes (devops). */
+function versionNotes(g: FlowGraph): RuleResult {
+  const versions = g.versions ?? [];
+  if (versions.length === 0) return rule('flow-version-notes', 'Has release/version notes', 0, 0, []);
+  const deployed = versions.filter(v => v.deployed);
+  const pool = deployed.length ? deployed : versions;
+  const withNotes = pool.filter(v => (v.description ?? '').trim()).length;
+  const ok = withNotes > 0;
+  return rule('flow-version-notes', 'Has release/version notes', 1, ok ? 1 : 0,
+    ok ? [] : [{ ruleId: 'flow-version-notes', severity: 'info', message: `No release/version notes across ${pool.length} version(s) — a devops/process gap`, fix: 'Add a description to each deployed version describing what changed.' }]);
+}
+
 /** All single-flow rules. */
-export function analyzeFlow(g: FlowGraph): RuleResult[] {
+export function analyzeFlow(g: FlowGraph, ctx?: FlowAnalysisContext): RuleResult[] {
   return [
-    branchCollectBalance(g),
-    broadcastUsage(g),
+    entryPoints(g),
+    forkCollectBalance(g),
+    savedContract(g, ctx),
+    queryScoping(g, ctx),
+    queryPageSize(g),
     nodeNaming(g),
     nodeDescriptions(g),
     duplicateNames(g),
     longScripts(g),
     errorHandling(g),
-    delayNodes(g),
     integrateInScript(g),
     credentialsInScript(g),
     scriptAntiPatterns(g),
+    flowNaming(g),
+    versionNotes(g),
   ];
 }
 
-function toReport(kindName: string, rules: RuleResult[]): ComplianceReport {
+function toReport(name: string, rules: RuleResult[]): ComplianceReport {
   const checks = rules.reduce((n, r) => n + r.checks, 0);
   const passed = rules.reduce((n, r) => n + r.passed, 0);
   const findings = rules.flatMap(r => r.findings).sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
-  return { kind: 'flow', name: kindName, score: checks === 0 ? 100 : Math.round((passed / checks) * 100), checks, passed, rules, findings };
+  return { kind: 'flow', name, score: checks === 0 ? 100 : Math.round((passed / checks) * 100), checks, passed, rules, findings };
 }
 
-export function runFlowGraphCompliance(g: FlowGraph): ComplianceReport {
-  return toReport(g.name, analyzeFlow(g));
+export function runFlowGraphCompliance(g: FlowGraph, ctx?: FlowAnalysisContext): ComplianceReport {
+  return toReport(g.name, analyzeFlow(g, ctx));
 }
 
 // --- cross-flow rules -----------------------------------------------------
 
-/** Strip comments + collapse whitespace so equivalent scripts compare equal. */
+/** Collapse whitespace/comments so equivalent scripts/queries compare equal. */
 export function normalizeScript(src: string): string {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
@@ -233,22 +376,24 @@ export function normalizeScript(src: string): string {
 
 /**
  * Look across many flows for repetition worth extracting:
- *  - the same query signature used in ≥2 flows → suggest a Saved Query
- *  - the same non-trivial script used in ≥2 flows → suggest a Saved Script
+ *  - the same inline query in ≥2 flows → suggest a Saved Query
+ *  - the same non-trivial inline script in ≥2 flows → suggest a Saved Script
  */
 export function analyzeFlowsCrossCutting(graphs: FlowGraph[]): ComplianceReport {
-  const queryFlows = new Map<string, Set<string>>();
+  const queryFlows = new Map<string, { flows: Set<string>; sample: string }>();
   const scriptFlows = new Map<string, { flows: Set<string>; sample: string }>();
 
   for (const g of graphs) {
     for (const n of g.nodes) {
-      if (n.type === 'query' && n.query) {
-        if (!queryFlows.has(n.query)) queryFlows.set(n.query, new Set());
-        queryFlows.get(n.query)!.add(g.name);
+      if (n.kind === 'query' && n.query) {
+        const norm = normalizeScript(n.query);
+        if (norm.length < 40) continue;
+        if (!queryFlows.has(norm)) queryFlows.set(norm, { flows: new Set(), sample: where(n) });
+        queryFlows.get(norm)!.flows.add(g.name);
       }
-      if (n.type === 'script' && n.script) {
+      if (n.kind === 'inlineScript' && n.script) {
         const norm = normalizeScript(n.script);
-        if (norm.length < 60) continue; // ignore trivial snippets
+        if (norm.length < 60) continue;
         if (!scriptFlows.has(norm)) scriptFlows.set(norm, { flows: new Set(), sample: where(n) });
         scriptFlows.get(norm)!.flows.add(g.name);
       }
@@ -256,8 +401,8 @@ export function analyzeFlowsCrossCutting(graphs: FlowGraph[]): ComplianceReport 
   }
 
   const qFindings: Finding[] = [];
-  for (const [sig, flows] of queryFlows) if (flows.size >= 2) {
-    qFindings.push({ ruleId: 'flow-shared-query', severity: 'warn', message: `Query \`${sig}\` appears in ${flows.size} flows (${[...flows].join(', ')})`, fix: 'Convert to a Saved Query and reference it from each flow.' });
+  for (const [, { flows, sample }] of queryFlows) if (flows.size >= 2) {
+    qFindings.push({ ruleId: 'flow-shared-query', severity: 'warn', message: `A query (e.g. "${sample}") appears in ${flows.size} flows (${[...flows].join(', ')})`, fix: 'Convert to a Saved Query and reference it from each flow.' });
   }
   const sFindings: Finding[] = [];
   for (const [, { flows, sample }] of scriptFlows) if (flows.size >= 2) {

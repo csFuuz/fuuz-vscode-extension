@@ -2,7 +2,7 @@
   "name": "fuuz-vscode-extension",
   "displayName": "Fuuz for VS Code",
   "description": "VS Code extension for Fuuz application management with multi-tenant MCP support",
-  "version": "0.33.0",
+  "version": "0.35.0",
   "publisher": "cscott",
   "icon": "media/icon.png",
   "repository": {
@@ -119,6 +119,18 @@
         "icon": "$(verified)"
       },
       {
+        "command": "fuuz.checkScreenCompliance",
+        "title": "Check Screen Compliance",
+        "category": "Fuuz",
+        "icon": "$(verified)"
+      },
+      {
+        "command": "fuuz.openResourceContent",
+        "title": "View Content",
+        "category": "Fuuz",
+        "icon": "$(go-to-file)"
+      },
+      {
         "command": "fuuz.checkAllFlows",
         "title": "Check All Flows (shared queries/scripts)",
         "category": "Fuuz",
@@ -126,7 +138,7 @@
       },
       {
         "command": "fuuz.checkTenant",
-        "title": "Audit Entire Tenant (models + flows)",
+        "title": "Audit Entire Tenant (models + flows + screens)",
         "category": "Fuuz",
         "icon": "$(checklist)"
       },
@@ -459,6 +471,20 @@
         {
           "command": "fuuz.checkFlowCompliance",
           "when": "view == fuuzResourceTree && viewItem == flow",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.checkScreenCompliance",
+          "when": "view == fuuzResourceTree && viewItem == screen"
+        },
+        {
+          "command": "fuuz.openResourceContent",
+          "when": "view == fuuzResourceTree && viewItem == script",
+          "group": "inline"
+        },
+        {
+          "command": "fuuz.openResourceContent",
+          "when": "view == fuuzResourceTree && viewItem == graphqlOp",
           "group": "inline"
         },
         {
