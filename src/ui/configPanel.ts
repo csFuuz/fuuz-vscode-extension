@@ -6,8 +6,9 @@ import { FuuzMcpClient } from '../services/fuuzMcpClient';
 import { ConnectionImporter } from '../services/connectionImporter';
 import { TenantDataService } from '../services/tenantDataService';
 import { ConnectionHealth } from '../services/connectionHealth';
+import { AiProviderManager } from '../services/aiProviderManager';
 import { fuuzLog } from '../services/logger';
-import type { ConfigInbound, ConfigOutbound, PanelState } from '../webview/config/protocol';
+import type { ConfigInbound, ConfigOutbound, PanelState, ProviderView } from '../webview/config/protocol';
 
 export interface ConfigPanelDeps {
   configManager: TenantConfigurationManager;
@@ -16,6 +17,9 @@ export interface ConfigPanelDeps {
   connectionImporter: ConnectionImporter;
   resourceService: TenantDataService;
   health: ConnectionHealth;
+  providerManager: AiProviderManager;
+  /** Account label for the signed-in Claude session, if any. */
+  getClaudeAccount: () => Promise<string | undefined>;
   /** Called after any mutation so the host can re-register MCP servers etc. */
   onChanged: () => void;
 }
@@ -147,6 +151,20 @@ export class ConfigPanel {
           await configManager.setToolEnabled(msg.enterpriseId, msg.tenantId, msg.name, !!msg.enabled);
           break;
 
+        case 'setProviderEnabled':
+          await this.deps.providerManager.setEnabled(msg.id, !!msg.enabled);
+          break;
+
+        case 'signInProvider':
+          await vscode.commands.executeCommand('fuuz.signInProvider', msg.id);
+          await this.postState();
+          return;
+
+        case 'signOutProvider':
+          await vscode.commands.executeCommand('fuuz.signOutProvider', msg.id);
+          await this.postState();
+          return;
+
         case 'createTool':
           await vscode.commands.executeCommand('fuuz.createTool');
           return;
@@ -210,6 +228,17 @@ export class ConfigPanel {
       }))
     );
 
+    const account = await this.deps.getClaudeAccount().catch(() => undefined);
+    const providers: ProviderView[] = this.deps.providerManager.list().map(p => ({
+      id: p.id,
+      label: p.label,
+      description: p.description,
+      usesOAuth: p.usesOAuth,
+      enabled: this.deps.providerManager.isEnabled(p.id),
+      signedIn: p.usesOAuth ? !!account : false,
+      account: p.usesOAuth ? account : undefined,
+    }));
+
     let activeTools: PanelState['activeTools'];
     if (activeEnt && activeTen) {
       const snapshot = configManager.getCachedResources(activeTen.id);
@@ -229,7 +258,7 @@ export class ConfigPanel {
       }
     }
 
-    return { enterprises, activeTools };
+    return { enterprises, providers, activeTools };
   }
 
   private async postState(): Promise<void> {

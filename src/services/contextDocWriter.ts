@@ -2,28 +2,32 @@ import * as vscode from 'vscode';
 import { EnterpriseEndpoints, TenantResources } from '../types';
 import { TenantConfigurationManager } from './tenantConfigurationManager';
 import { TenantDataService } from './tenantDataService';
+import { TenantWorkspace, describeSyncAge, isSyncStale } from './tenantWorkspace';
 import { DESIGN_SYSTEM_VERSION, renderDesignSystemDoc } from '../util/designSystem';
 
 /**
- * Generates `.fuuz/AVAILABLE.md` in the workspace: a human- and copilot-readable
- * snapshot of what exists in the active tenant's Fuuz app (module groups,
- * screens, flows, data models, scripts, queries, documents) plus a pointer to
- * the Fuuz MCP server. Dropping this into the repo "defaults" the available
- * surface into the IDE so a developer (and their AI) can orient immediately.
+ * Generates the per-tenant context folder in the workspace
+ * (`.fuuz/<enterprise>-<tenant>/`): a human- and copilot-readable snapshot of
+ * what exists in the active tenant's Fuuz app (module groups, screens, flows,
+ * data models, scripts, queries, documents) plus a pointer to the Fuuz MCP
+ * server. Each connected tenant gets its own folder so the copilot's context
+ * and generated files for one tenant never collide with another's. Dropping
+ * this into the repo "defaults" the available surface into the IDE so a
+ * developer (and their AI) can orient immediately on the *selected* tenant.
  *
- * Alongside it, writes `.fuuz/DESIGN_SYSTEM.md` — the canonical Fuuz UI design
+ * Alongside it, writes `DESIGN_SYSTEM.md` — the canonical Fuuz UI design
  * system — so every widget an AI copilot builds through the MCP is themed like
  * core Fuuz by default. AVAILABLE.md points at it.
  */
 export class ContextDocWriter {
   constructor(
     private readonly configManager: TenantConfigurationManager,
-    private readonly dataService: TenantDataService
+    private readonly dataService: TenantDataService,
+    private readonly workspace: TenantWorkspace = new TenantWorkspace()
   ) {}
 
   async write(): Promise<vscode.Uri | null> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) {
+    if (!this.workspace.root()) {
       void vscode.window.showWarningMessage('Open a folder to generate the Fuuz context file.');
       return null;
     }
@@ -37,8 +41,10 @@ export class ContextDocWriter {
 
     const resources = await this.dataService.getTenantResources(tenant);
     const disabled = new Set(this.configManager.disabledTools(enterprise.id, tenant.id));
-    const dir = vscode.Uri.joinPath(folder.uri, '.fuuz');
-    await vscode.workspace.fs.createDirectory(dir);
+
+    // Per-tenant repo folder — created if it doesn't exist yet.
+    const dir = await this.workspace.ensureTenantDir(enterprise, tenant);
+    if (!dir) return null;
 
     // Canonical design system — refreshed on every generate so it tracks the
     // extension version. AVAILABLE.md references it (see render()).
@@ -65,7 +71,15 @@ export class ContextDocWriter {
     lines.push('> and your AI copilot understand what exists in this tenant. For anything');
     lines.push('> involving a **flow, screen, script, schema, data model, or document**,');
     lines.push('> work through the **Fuuz MCP server** in VS Code rather than editing by hand.');
+    lines.push('>');
+    lines.push('> **This is the active tenant.** Scope your work — and any new files in this');
+    lines.push('> folder — to this tenant and the resources listed below.');
     lines.push('');
+    if (isSyncStale(r)) {
+      lines.push(`> ⚠️ **Stale context.** The tenant data was last synced ${describeSyncAge(r)}.`);
+      lines.push('> Run **Fuuz: Sync Tenant Data** to refresh before relying on the list below.');
+      lines.push('');
+    }
     lines.push('## UI / design system');
     lines.push(`When building any **HTML/SVG widget output** (a script that returns a \`data:text/html\` URL or a chart dataSource), apply the canonical Fuuz design system in [\`DESIGN_SYSTEM.md\`](./DESIGN_SYSTEM.md) (v${DESIGN_SYSTEM_VERSION}) **by default** — DM Sans, neutral-charcoal/white surfaces, violet \`#5B30DF\` accent, the shared status palette. Deviate only when the user asks for something unique.`);
     lines.push('');

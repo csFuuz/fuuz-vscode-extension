@@ -40,8 +40,24 @@ export interface ToolView {
   enabled: boolean;
 }
 
+/** An AI host the Fuuz MCP servers can be wired into. */
+export interface ProviderView {
+  id: 'copilot' | 'claude-code' | 'claude-desktop';
+  label: string;
+  description: string;
+  enabled: boolean;
+  /** Whether this provider authenticates via OAuth sign-in (Claude). */
+  usesOAuth: boolean;
+  /** Whether an OAuth session currently exists (Claude providers only). */
+  signedIn: boolean;
+  /** Account label for the signed-in session, if any. */
+  account?: string;
+}
+
 export interface PanelState {
   enterprises: EnterpriseView[];
+  /** AI hosts the MCP servers are wired into (Copilot, Claude Code, Claude Desktop). */
+  providers: ProviderView[];
   /** Agent tools for the active tenant (from the last MCP sync). */
   activeTools?: {
     enterpriseId: string;
@@ -69,7 +85,10 @@ export type ConfigInbound =
   | { type: 'replaceKey'; enterpriseId: string; tenantId: string }
   | { type: 'setToolEnabled'; enterpriseId: string; tenantId: string; name: string; enabled: boolean }
   | { type: 'createTool' }
-  | { type: 'test'; enterpriseId: string; tenantId: string; token?: string };
+  | { type: 'test'; enterpriseId: string; tenantId: string; token?: string }
+  | { type: 'setProviderEnabled'; id: ProviderView['id']; enabled: boolean }
+  | { type: 'signInProvider'; id: ProviderView['id'] }
+  | { type: 'signOutProvider'; id: ProviderView['id'] };
 
 /** Extension → webview. */
 export type ConfigOutbound =

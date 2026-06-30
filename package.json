@@ -246,12 +246,30 @@
         "title": "Open Settings",
         "category": "Fuuz",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "fuuz.signInProvider",
+        "title": "Sign in to AI Provider (Claude)",
+        "category": "Fuuz",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "fuuz.signOutProvider",
+        "title": "Sign out of AI Provider (Claude)",
+        "category": "Fuuz",
+        "icon": "$(sign-out)"
       }
     ],
     "mcpServerDefinitionProviders": [
       {
         "id": "fuuz",
         "label": "Fuuz"
+      }
+    ],
+    "authentication": [
+      {
+        "id": "fuuz-claude",
+        "label": "Claude (Fuuz)"
       }
     ],
     "viewsContainers": {
@@ -385,6 +403,35 @@
           ],
           "default": "userAndDesktop",
           "markdownDescription": "Automatically register the Fuuz MCP servers with **Claude** whenever a connection or its token changes, so Claude can use them without running a command.\n\nThe live access token is **embedded** into Claude's private home-dir config (`~/.claude.json` and Claude Desktop, mode-600, never committed) — the same way every other MCP server stores its auth. The project `.mcp.json` is **never** written automatically and never embeds a token. **Restart Claude** to pick up changes.",
+          "scope": "application"
+        },
+        "fuuz.claudeOAuth.clientId": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "OAuth **client id** for signing in to Claude from the **AI providers** panel. Set this to the Claude OAuth application your organization has registered. Until it is set, the Claude **Sign in** action reports that OAuth is not configured.",
+          "scope": "application"
+        },
+        "fuuz.claudeOAuth.authorizeUrl": {
+          "type": "string",
+          "default": "https://claude.ai/oauth/authorize",
+          "markdownDescription": "OAuth **authorization endpoint** used by the Claude sign-in flow (PKCE). Override only if your organization uses a custom Claude OAuth deployment.",
+          "scope": "application"
+        },
+        "fuuz.claudeOAuth.tokenUrl": {
+          "type": "string",
+          "default": "https://console.anthropic.com/v1/oauth/token",
+          "markdownDescription": "OAuth **token endpoint** used to exchange the authorization code for an access token. Override only if your organization uses a custom Claude OAuth deployment.",
+          "scope": "application"
+        },
+        "fuuz.claudeOAuth.scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "profile"
+          ],
+          "markdownDescription": "OAuth **scopes** requested during Claude sign-in.",
           "scope": "application"
         }
       }

@@ -9,6 +9,9 @@ import { FuuzMcpServerProvider } from './services/mcpServerProvider';
 import { McpJsonWriter } from './services/mcpJsonWriter';
 import { ClaudeMcpWriter, ClaudeTarget } from './services/claudeMcpWriter';
 import { ContextDocWriter } from './services/contextDocWriter';
+import { AiProviderManager, AiProviderId } from './services/aiProviderManager';
+import { ClaudeAuthProvider } from './services/claudeAuthProvider';
+import { TenantWorkspace, describeSyncAge, isSyncStale } from './services/tenantWorkspace';
 import { FuuzApiClient } from './services/fuuzApiClient';
 import { ConnectionImporter } from './services/connectionImporter';
 import { ConnectionHealth } from './services/connectionHealth';
@@ -63,7 +66,13 @@ export async function activate(context: vscode.ExtensionContext) {
     const statusBar = new FuuzStatusBar(configManager, health);
     const mcpJsonWriter = new McpJsonWriter(configManager);
     const claudeMcpWriter = new ClaudeMcpWriter(configManager, tokenStore, context.extensionUri);
-    const contextDocWriter = new ContextDocWriter(configManager, resourceService);
+    const tenantWorkspace = new TenantWorkspace();
+    const contextDocWriter = new ContextDocWriter(configManager, resourceService, tenantWorkspace);
+
+    // AI providers (the copilots the MCP servers are wired into) + Claude OAuth.
+    const providerManager = new AiProviderManager(context);
+    const claudeAuth = ClaudeAuthProvider.register(context);
+    context.subscriptions.push(providerManager);
 
     // Register the Fuuz MCP servers with VS Code (guarded for older hosts).
     const mcpServerProvider = new FuuzMcpServerProvider(configManager, tokenStore, context.extensionUri);
@@ -119,6 +128,26 @@ export async function activate(context: vscode.ExtensionContext) {
       void updateContextFlags(configManager);
     };
 
+    /**
+     * When the active tenant changes, make the copilot's context follow it:
+     * ensure the per-tenant repo folder exists (creating it if missing),
+     * regenerate its context doc, and nudge for a resync if the data is >24h old.
+     * Best-effort and quiet — no-ops cleanly when no folder/token is available.
+     */
+    const onActiveTenantChanged = async () => {
+      const enterprise = configManager.getActiveEnterprise();
+      const tenant = configManager.getActiveTenant();
+      if (!enterprise || !tenant || !tenantWorkspace.root()) return;
+      if (!(await tokenStore.hasToken(enterprise.id, tenant.id))) return;
+      try {
+        await tenantWorkspace.ensureTenantDir(enterprise, tenant);
+        await contextDocWriter.write();
+      } catch (err) {
+        fuuzLog(`context refresh for ${tenant.name} failed: ${errMsg(err)}`);
+      }
+      void maybeSuggestResync(configManager, resourceService, onChanged);
+    };
+
     registerCommands(context, {
       configManager,
       resourceService,
@@ -130,6 +159,8 @@ export async function activate(context: vscode.ExtensionContext) {
       mcpClient,
       connectionImporter,
       health,
+      providerManager,
+      claudeAuth,
       onChanged,
     });
 
@@ -174,6 +205,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
       configManager.onDidChangeActiveTenant(onChanged),
+      configManager.onDidChangeActiveTenant(() => void onActiveTenantChanged()),
+      providerManager.onDidChange(onChanged),
+      claudeAuth.onDidChangeSessions(() => providerManager.notifyAuthChanged()),
       tokenStore.onDidChange(() => mcpServerProvider.refresh()),
       health.onDidChange(() => {
         tenantSelectorProvider.refresh();
@@ -207,11 +241,13 @@ interface CommandDeps {
   mcpClient: FuuzMcpClient;
   connectionImporter: ConnectionImporter;
   health: ConnectionHealth;
+  providerManager: AiProviderManager;
+  claudeAuth: ClaudeAuthProvider;
   onChanged: () => void;
 }
 
 function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
-  const { configManager, resourceService, resourceTreeProvider, mcpJsonWriter, claudeMcpWriter, contextDocWriter, connectionImporter, tokenStore, mcpClient, health } = deps;
+  const { configManager, resourceService, resourceTreeProvider, mcpJsonWriter, claudeMcpWriter, contextDocWriter, connectionImporter, tokenStore, mcpClient, health, providerManager, claudeAuth } = deps;
 
   const register = (id: string, fn: (...args: any[]) => any) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
@@ -224,8 +260,39 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       connectionImporter: deps.connectionImporter,
       resourceService: deps.resourceService,
       health: deps.health,
+      providerManager: deps.providerManager,
+      getClaudeAccount: () => deps.claudeAuth.currentAccount(),
       onChanged: deps.onChanged,
     });
+  });
+
+  // Sign in to a provider's account (Claude → OAuth) and enable it.
+  register('fuuz.signInProvider', async (id?: AiProviderId) => {
+    const def = id ? AiProviderManager.def(id) : undefined;
+    if (!def || !def.usesOAuth) {
+      vscode.window.showWarningMessage('Fuuz: this provider does not require signing in.');
+      return;
+    }
+    try {
+      // createIfNone:true drives ClaudeAuthProvider.createSession (the OAuth flow)
+      // and surfaces the account in VS Code's Accounts menu.
+      const session = await vscode.authentication.getSession('fuuz-claude', [], { createIfNone: true });
+      if (!session) return;
+      await providerManager.setEnabled(def.id, true);
+      // Materialize the Fuuz servers into this Claude target now that it's enabled.
+      if (def.claudeTarget) await claudeMcpWriter.sync([def.claudeTarget]).catch(err => fuuzLog(`claude sync after sign-in failed: ${errMsg(err)}`));
+      deps.onChanged();
+      vscode.window.showInformationMessage(`Fuuz: signed in to Claude as ${session.account.label} and enabled ${def.label}. Restart Claude to load the Fuuz servers.`);
+    } catch (err) {
+      vscode.window.showErrorMessage(`Fuuz: Claude sign-in failed — ${errMsg(err)}`);
+    }
+  });
+
+  // Sign out of the Claude account used by the Claude providers.
+  register('fuuz.signOutProvider', async (_id?: AiProviderId) => {
+    await claudeAuth.signOutAll();
+    deps.onChanged();
+    vscode.window.showInformationMessage('Fuuz: signed out of Claude.');
   });
 
   // Reusable re-auth: replace a tenant's API key, re-validate, re-sync.
@@ -454,7 +521,10 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
   register('fuuz.generateContextDoc', async () => {
     const uri = await contextDocWriter.write();
     if (uri) {
-      const open = await vscode.window.showInformationMessage('Generated .fuuz/AVAILABLE.md', 'Open');
+      const open = await vscode.window.showInformationMessage(
+        `Generated context for the active tenant at ${vscode.workspace.asRelativePath(uri)}`,
+        'Open'
+      );
       if (open) await vscode.window.showTextDocument(uri);
     }
   });
@@ -1518,6 +1588,44 @@ async function updateContextFlags(configManager: TenantConfigurationManager) {
 
 function errMsg(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// Per-tenant throttle so the resync nudge appears at most once per session per tenant.
+const resyncNudged = new Set<string>();
+
+/**
+ * If the active tenant's MCP data is older than 24h, suggest a resync (the
+ * copilot relies on this cached surface for reference data). Offers a one-click
+ * "Sync now"; throttled to once per tenant per session.
+ */
+async function maybeSuggestResync(
+  configManager: TenantConfigurationManager,
+  resourceService: TenantDataService,
+  onChanged: () => void
+): Promise<void> {
+  const tenant = configManager.getActiveTenant();
+  if (!tenant) return;
+  const snapshot = configManager.getCachedResources(tenant.id);
+  if (!isSyncStale(snapshot)) return;
+  if (resyncNudged.has(tenant.id)) return;
+  resyncNudged.add(tenant.id);
+
+  const SYNC = 'Sync now';
+  const choice = await vscode.window.showInformationMessage(
+    `Fuuz: ${tenant.name} was last synced ${describeSyncAge(snapshot)}. Resync so your copilot has up-to-date tenant context?`,
+    SYNC,
+    'Later'
+  );
+  if (choice === SYNC) {
+    try {
+      resourceService.forgetUnauthorizedWarning(tenant.id);
+      await resourceService.syncTenantResources(tenant);
+      resyncNudged.delete(tenant.id); // fresh again — allow a future nudge
+      onChanged();
+    } catch (err) {
+      vscode.window.showErrorMessage(`Fuuz: resync failed — ${errMsg(err)}`);
+    }
+  }
 }
 
 /**
