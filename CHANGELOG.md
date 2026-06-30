@@ -2,6 +2,29 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## Unreleased
+
+**AI providers, Claude sign-in, and tenant-scoped copilot context.**
+
+- **AI providers panel** — a new card in *Fuuz Connections* lists the AI hosts the
+  Fuuz MCP servers wire into (GitHub Copilot, Claude Code, Claude Desktop). Each
+  is enabled independently; provider state is stored as a keyed array so enabling
+  a second provider no longer clobbers the first (the "only the first provider is
+  recognized" bug).
+- **Sign in to Claude with OAuth** — the Claude providers authenticate via an
+  OAuth 2.0 + PKCE flow (`vscode.AuthenticationProvider`) instead of pasting a
+  key. Configure the OAuth client with `fuuz.claudeOAuth.clientId` (and, for a
+  custom deployment, `authorizeUrl` / `tokenUrl` / `scopes`).
+- **Tenant-scoped context** — selecting a tenant now drives the copilot's context:
+  the generated surface follows the **active** tenant and its currently-synced
+  resources.
+- **Per-tenant repo folder** — context is written to `.fuuz/<enterprise>-<tenant>/`
+  (created automatically if missing) so each tenant's generated files and context
+  never collide. Point your copilot at this folder for new files for that tenant.
+- **24h sync-staleness nudge** — when the active tenant's MCP data is older than
+  24 hours, the extension suggests a resync (one-click *Sync now*) and the context
+  doc carries a "stale context" banner, so the copilot's reference data stays fresh.
+
 ## 0.37.0
 
 Industrial best-practice checks across data models, flows and screens (type-aware,

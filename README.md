@@ -131,8 +131,16 @@ tenant's Bearer token, stored in VS Code **SecretStorage** — never in
 - **Create New Tool** — kicks off a guided Copilot Chat (agent mode) that uses the
   Fuuz MCP tools to design and build a new **data flow** (exposed as a tool),
   gathering schema/context and confirming the design before making changes.
-- **App context file** — **Generate App Context File** writes `.fuuz/AVAILABLE.md`,
-  a copilot-readable snapshot of the active tenant.
+- **App context file** — **Generate App Context File** writes
+  `.fuuz/<enterprise>-<tenant>/AVAILABLE.md`, a copilot-readable snapshot of the
+  **active** tenant. Each connected tenant gets its own folder (created on demand),
+  so context and generated files for one tenant never collide with another's —
+  point your copilot at the active tenant's folder for new work. The snapshot
+  carries a **stale-context banner** when the tenant hasn't been synced in 24h.
+- **AI providers** — the *Fuuz Connections* panel lists the AI hosts the Fuuz MCP
+  servers wire into (GitHub Copilot, Claude Code, Claude Desktop). Enable any
+  number independently; the Claude providers offer **Sign in** via OAuth (see
+  [Use with Claude](#use-with-claude-claude-code--claude-desktop)).
 
 ## Sidebar
 
@@ -162,6 +170,28 @@ VS Code's MCP registration (`registerMcpServerDefinitionProvider`) is consumed
 **only by VS Code's own Copilot/agent mode** — Claude can't see it. Each MCP
 client reads its own config, so to make Fuuz reachable from Claude the extension
 writes the servers into Claude's config files.
+
+### Sign in to Claude (OAuth)
+
+In the **AI providers** card of *Fuuz Connections*, the Claude providers (Claude
+Code, Claude Desktop) have a **Sign in** action that runs an OAuth 2.0 + PKCE
+flow in the browser and stores the session in SecretStorage — no key to paste.
+Signing in also enables that provider and registers the Fuuz servers into its
+config.
+
+OAuth is **client-configurable** so your organization can point it at the Claude
+OAuth application it has registered:
+
+| Setting | Purpose |
+| --- | --- |
+| `fuuz.claudeOAuth.clientId` | OAuth client id (**required** to enable sign-in) |
+| `fuuz.claudeOAuth.authorizeUrl` | Authorization endpoint (default `https://claude.ai/oauth/authorize`) |
+| `fuuz.claudeOAuth.tokenUrl` | Token endpoint (default `https://console.anthropic.com/v1/oauth/token`) |
+| `fuuz.claudeOAuth.scopes` | Requested scopes (default `["profile"]`) |
+
+> Until `fuuz.claudeOAuth.clientId` is set, **Sign in** reports that OAuth is not
+> configured. Registering the Fuuz MCP servers into Claude's config (below) works
+> independently of OAuth sign-in.
 
 ### Automatic (default)
 
@@ -228,6 +258,7 @@ read/query policy in that tenant.
 
 - **Fuuz: Add Connection by API Key** — onboard a connection from a key
 - **Fuuz: Configure Connections** — open the connection management panel
+- **Fuuz: Sign in to AI Provider (Claude)** / **Sign out of AI Provider (Claude)** — Claude OAuth sign-in for the Claude providers
 - **Fuuz: Select Active Tenant** — quick-pick the active enterprise/tenant
 - **Fuuz: Sync Tenant Data** — refresh the Resources view for the active tenant
 - **Fuuz: Show ERD** / **Show Module ERD** / **Show Application ERD** — interactive entity-relationship diagrams (drag nodes, expand fields, persisted layout)
@@ -303,7 +334,10 @@ org SLA. To re-home it, change `publisher` in `package.json`.
   - `mcpServerProvider.ts` — registers Fuuz MCP servers with VS Code
   - `mcpJsonWriter.ts` — generates `.vscode/mcp.json`
   - `claudeMcpWriter.ts` — registers the Fuuz servers into Claude Code / Claude Desktop config
-  - `contextDocWriter.ts` — generates `.fuuz/AVAILABLE.md`
+  - `aiProviderManager.ts` — enabled AI hosts (keyed-array state; multi-provider safe)
+  - `claudeAuthProvider.ts` — `vscode.AuthenticationProvider` implementing Claude OAuth (PKCE)
+  - `tenantWorkspace.ts` — per-tenant `.fuuz/<enterprise>-<tenant>/` repo folder + sync freshness (`util/syncFreshness.ts`)
+  - `contextDocWriter.ts` — generates the active tenant's `AVAILABLE.md` in its repo folder
   - `tenantDataService.ts` — sync + cache resources
 - **Providers**: `tenantSelectorProvider.ts` (Connections), `resourceTreeProvider.ts` (Resources)
 - **UI**: `ui/configPanel.ts` (webview), `ui/statusBar.ts`, `ui/runtimeCommands.ts`, `ui/erdPanel.ts` (hosts the ERD webview)

@@ -7,6 +7,7 @@ import type {
   ImportResultView,
   PanelState,
   ProbeView,
+  ProviderView,
   TenantView,
 } from './protocol';
 import './styles.css';
@@ -138,6 +139,42 @@ function EnterpriseCard({ enterprise, probeStatus }: { enterprise: EnterpriseVie
   );
 }
 
+function ProvidersCard({ providers }: { providers: ProviderView[] }) {
+  return (
+    <div className="card">
+      <div className="ent-head">
+        <div>
+          <h2>AI providers</h2>
+          <div className="muted">
+            Which AI hosts the Fuuz MCP servers are wired into. Enable any number — each is independent.
+          </div>
+        </div>
+      </div>
+      {providers.map(p => (
+        <div key={p.id} className={`tenant${p.enabled ? '' : ' off'}`}>
+          <span className="name">{p.label}</span>
+          {p.enabled && <span className="badge active">enabled</span>}
+          {p.usesOAuth && (
+            <span className={`badge${p.signedIn ? ' active' : ''}`}>
+              {p.signedIn ? `signed in${p.account ? `: ${p.account}` : ''}` : 'not signed in'}
+            </span>
+          )}
+          <span className="muted" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {p.description}
+          </span>
+          {p.usesOAuth && (p.signedIn
+            ? <button className="secondary" onClick={() => post({ type: 'signOutProvider', id: p.id })}>Sign out</button>
+            : <button className="secondary" onClick={() => post({ type: 'signInProvider', id: p.id })}>Sign in</button>
+          )}
+          <button className="secondary" onClick={() => post({ type: 'setProviderEnabled', id: p.id, enabled: !p.enabled })}>
+            {p.enabled ? 'Disable' : 'Enable'}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AgentToolsCard({ at }: { at: NonNullable<PanelState['activeTools']> }) {
   return (
     <div className="card">
@@ -172,7 +209,7 @@ function AgentToolsCard({ at }: { at: NonNullable<PanelState['activeTools']> }) 
 }
 
 function App() {
-  const [state, setState] = useState<PanelState>({ enterprises: [] });
+  const [state, setState] = useState<PanelState>({ enterprises: [], providers: [] });
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>({});
   const [importResult, setImportResult] = useState<ImportResultView | { error: string } | null>(null);
   const logo = document.getElementById('root')?.dataset.logo;
@@ -208,6 +245,7 @@ function App() {
         </div>
       </header>
       <AddByKeyCard result={importResult} />
+      {state.providers?.length ? <ProvidersCard providers={state.providers} /> : null}
       {state.enterprises.map(e => (
         <EnterpriseCard key={e.id} enterprise={e} probeStatus={probeStatus} />
       ))}

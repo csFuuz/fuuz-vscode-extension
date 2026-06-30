@@ -53,6 +53,10 @@ const SAMPLE = {
         tenants: [{ id: 'tnt-prod', name: 'Production', hasToken: true, active: false, disabled: false }],
       },
     ],
+    providers: [
+      { id: 'copilot', label: 'GitHub Copilot (VS Code)', description: 'Surfaced to Copilot.', enabled: true, usesOAuth: false, signedIn: false },
+      { id: 'claude-code', label: 'Claude Code', description: 'Writes ~/.claude.json.', enabled: false, usesOAuth: true, signedIn: false },
+    ],
     activeTools: {
       enterpriseId: 'ent-acme', tenantId: 'tnt-prod', tenantName: 'Production',
       items: [{ name: 'system_query_model', description: 'Query a model', kind: 'system', enabled: true }],
@@ -89,6 +93,27 @@ async function main() {
   check('renders agent tools card with the tool', () => {
     assert.ok(document.body.textContent.includes('system_query_model'), 'tool name missing');
     assert.ok(document.body.textContent.includes('Agent Tools — Production'), 'tools header missing');
+  });
+
+  check('renders AI providers card', () => {
+    const html = document.body.textContent;
+    assert.ok(html.includes('AI providers'), 'providers header missing');
+    assert.ok(html.includes('GitHub Copilot (VS Code)'), 'copilot provider missing');
+    assert.ok(html.includes('Claude Code'), 'claude provider missing');
+  });
+
+  check('Claude provider Sign in posts {signInProvider}', () => {
+    const btn = byText('button', 'Sign in');
+    assert.ok(btn, 'Sign in button not found');
+    btn.click();
+    assert.ok(posted.some(m => m.type === 'signInProvider' && m.id === 'claude-code'), `posted: ${JSON.stringify(posted)}`);
+  });
+
+  check('Provider Enable posts {setProviderEnabled}', () => {
+    const btn = byText('button', 'Enable');
+    assert.ok(btn, 'Enable button not found');
+    btn.click();
+    assert.ok(posted.some(m => m.type === 'setProviderEnabled'), `posted: ${JSON.stringify(posted)}`);
   });
 
   // Interaction: add-by-key.
