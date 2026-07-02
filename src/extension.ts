@@ -11,6 +11,9 @@ import { ClaudeMcpWriter, ClaudeTarget } from './services/claudeMcpWriter';
 import { ContextDocWriter } from './services/contextDocWriter';
 import { AiProviderManager, AiProviderId } from './services/aiProviderManager';
 import { ClaudeAuthProvider } from './services/claudeAuthProvider';
+import { LmStudioClient } from './services/lmStudioClient';
+import { LmStudioManager, ORCHESTRATION_ROLES, ROLE_LABELS, OrchestrationRole } from './services/lmStudioManager';
+import { OrchestratorContext } from './services/orchestratorContext';
 import { TenantWorkspace, describeSyncAge, isSyncStale } from './services/tenantWorkspace';
 import { FuuzApiClient } from './services/fuuzApiClient';
 import { ConnectionImporter } from './services/connectionImporter';
@@ -23,7 +26,7 @@ import { ErdPanel } from './ui/erdPanel';
 import { ResourceContentProvider, FUUZ_SCHEME, resourceContentUri } from './ui/resourceContentProvider';
 import { buildModelGraph, buildSetGraph } from './util/fuuzParse';
 import type { ErdService } from './util/erdTypes';
-import { fuuzLog } from './services/logger';
+import { fuuzLog, fuuzChannel } from './services/logger';
 import { isAbortError } from './util/abort';
 import { runCompliance } from './qa/complianceChecker';
 import { runFlowGraphCompliance, analyzeFlowsCrossCutting } from './qa/flowAnalysis';
@@ -73,6 +76,12 @@ export async function activate(context: vscode.ExtensionContext) {
     const providerManager = new AiProviderManager(context);
     const claudeAuth = ClaudeAuthProvider.register(context);
     context.subscriptions.push(providerManager);
+
+    // LM Studio local models + multi-model orchestrator context sharing.
+    const lmStudioClient = new LmStudioClient();
+    const lmStudioManager = new LmStudioManager(context, lmStudioClient);
+    const orchestrator = new OrchestratorContext(context, lmStudioClient, lmStudioManager);
+    context.subscriptions.push(lmStudioManager, orchestrator, lmStudioManager.onDidChange(() => ConfigPanel.refreshIfOpen()));
 
     // Register the Fuuz MCP servers with VS Code (guarded for older hosts).
     const mcpServerProvider = new FuuzMcpServerProvider(configManager, tokenStore, context.extensionUri);
@@ -161,6 +170,9 @@ export async function activate(context: vscode.ExtensionContext) {
       health,
       providerManager,
       claudeAuth,
+      lmStudioClient,
+      lmStudioManager,
+      orchestrator,
       onChanged,
     });
 
@@ -243,11 +255,14 @@ interface CommandDeps {
   health: ConnectionHealth;
   providerManager: AiProviderManager;
   claudeAuth: ClaudeAuthProvider;
+  lmStudioClient: LmStudioClient;
+  lmStudioManager: LmStudioManager;
+  orchestrator: OrchestratorContext;
   onChanged: () => void;
 }
 
 function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
-  const { configManager, resourceService, resourceTreeProvider, mcpJsonWriter, claudeMcpWriter, contextDocWriter, connectionImporter, tokenStore, mcpClient, health, providerManager, claudeAuth } = deps;
+  const { configManager, resourceService, resourceTreeProvider, mcpJsonWriter, claudeMcpWriter, contextDocWriter, connectionImporter, tokenStore, mcpClient, health, providerManager, claudeAuth, lmStudioManager, orchestrator } = deps;
 
   const register = (id: string, fn: (...args: any[]) => any) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
@@ -262,8 +277,97 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       health: deps.health,
       providerManager: deps.providerManager,
       getClaudeAccount: () => deps.claudeAuth.currentAccount(),
+      lmStudioManager: deps.lmStudioManager,
       onChanged: deps.onChanged,
     });
+  });
+
+  // --- LM Studio local models + orchestrator ------------------------------
+
+  // Discover installed models from the local LM Studio server.
+  register('fuuz.lmStudio.discoverModels', async () => {
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Discovering LM Studio models…', cancellable: false },
+      async () => {
+        try {
+          const models = await lmStudioManager.discover();
+          await providerManager.setEnabled('lmstudio', true);
+          deps.onChanged();
+          if (models.length === 0) {
+            vscode.window.showWarningMessage('Fuuz: LM Studio is reachable but has no models. Download a model in LM Studio, then discover again.');
+          } else {
+            const choice = await vscode.window.showInformationMessage(
+              `Fuuz: found ${models.length} LM Studio model(s). Assign them to orchestration roles?`,
+              'Assign roles'
+            );
+            if (choice) await vscode.commands.executeCommand('fuuz.lmStudio.assignRoles');
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(`Fuuz: ${errMsg(err)}`);
+        }
+      }
+    );
+  });
+
+  // Assign discovered models to orchestration roles (orchestrator/coder/…).
+  register('fuuz.lmStudio.assignRoles', async () => {
+    const models = lmStudioManager.models();
+    if (models.length === 0) {
+      const choice = await vscode.window.showWarningMessage('Fuuz: no LM Studio models discovered yet.', 'Discover models');
+      if (choice) await vscode.commands.executeCommand('fuuz.lmStudio.discoverModels');
+      return;
+    }
+    for (const role of ORCHESTRATION_ROLES) {
+      const current = lmStudioManager.modelForRole(role);
+      const pick = await vscode.window.showQuickPick(
+        [
+          { label: '$(circle-slash) (unassigned)', id: undefined as string | undefined },
+          ...models.map(m => ({
+            label: `${m.id}${m.id === current ? ' ✓' : ''}`,
+            description: [m.type, m.state, m.quantization].filter(Boolean).join(' · '),
+            id: m.id,
+          })),
+        ],
+        { title: `LM Studio role: ${ROLE_LABELS[role]}`, placeHolder: current ? `Currently: ${current}` : 'Select a model for this role (Esc to skip)' }
+      );
+      if (pick === undefined) break; // user escaped — stop the wizard
+      await lmStudioManager.assignRole(role, pick.id);
+    }
+    deps.onChanged();
+    vscode.window.showInformationMessage('Fuuz: LM Studio role assignments saved.');
+  });
+
+  // Route a message to an orchestration role's model, sharing orchestrator context.
+  register('fuuz.orchestrator.send', async (roleArg?: OrchestrationRole, inputArg?: string) => {
+    const role = roleArg ?? (await vscode.window.showQuickPick(
+      ORCHESTRATION_ROLES.filter(r => r !== 'embeddings').map(r => ({ label: ROLE_LABELS[r], id: r })),
+      { title: 'Send to which role?' }
+    ))?.id as OrchestrationRole | undefined;
+    if (!role) return;
+    const input = inputArg ?? await vscode.window.showInputBox({ title: `Message the ${ROLE_LABELS[role]} model`, prompt: 'Your message', ignoreFocusOut: true });
+    if (!input) return;
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `${ROLE_LABELS[role]} is thinking…`, cancellable: false },
+      async () => {
+        try {
+          const res = await orchestrator.send(role, input);
+          fuuzLog(`[orchestrator ${role}/${res.model}${res.seeded ? ' seeded' : ''}] ${res.text}`);
+          const OPEN = 'Show output';
+          const choice = await vscode.window.showInformationMessage(
+            `${res.model} replied${res.seeded ? ' (seeded from shared context)' : ''}.`, OPEN
+          );
+          if (choice === OPEN) fuuzChannel().show(true);
+        } catch (err) {
+          vscode.window.showErrorMessage(`Fuuz: ${errMsg(err)}`);
+        }
+      }
+    );
+  });
+
+  // Clear the shared orchestrator conversation + every model's cached thread.
+  register('fuuz.orchestrator.reset', async () => {
+    await orchestrator.reset();
+    vscode.window.showInformationMessage('Fuuz: orchestrator context cleared.');
   });
 
   // Sign in to a provider's account (Claude → OAuth) and enable it.

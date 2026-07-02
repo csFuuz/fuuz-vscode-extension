@@ -166,11 +166,39 @@ function ProvidersCard({ providers }: { providers: ProviderView[] }) {
             ? <button className="secondary" onClick={() => post({ type: 'signOutProvider', id: p.id })}>Sign out</button>
             : <button className="secondary" onClick={() => post({ type: 'signInProvider', id: p.id })}>Sign in</button>
           )}
+          {p.isLocalModels && (
+            <button className="secondary" onClick={() => post({ type: 'discoverLmStudioModels' })}>Discover models</button>
+          )}
           <button className="secondary" onClick={() => post({ type: 'setProviderEnabled', id: p.id, enabled: !p.enabled })}>
             {p.enabled ? 'Disable' : 'Enable'}
           </button>
         </div>
       ))}
+      {providers.filter(p => p.isLocalModels && p.localModels).map(p => (
+        <LocalModelsPanel key={`${p.id}-models`} lm={p.localModels!} />
+      ))}
+    </div>
+  );
+}
+
+function LocalModelsPanel({ lm }: { lm: NonNullable<ProviderView['localModels']> }) {
+  return (
+    <div style={{ margin: '4px 0 2px 0' }}>
+      <div className="muted" style={{ margin: '4px 0' }}>
+        {lm.models.length
+          ? <>Discovered {lm.models.length} model(s){lm.discoveredAt ? ` · ${new Date(lm.discoveredAt).toLocaleString()}` : ''}.{' '}
+              <a href="#" onClick={e => { e.preventDefault(); post({ type: 'assignLmStudioRoles' }); }}>Assign roles</a></>
+          : <>No models discovered yet — start LM Studio and click <b>Discover models</b>.</>}
+      </div>
+      {lm.models.length > 0 && (
+        <div className="tenant" style={{ flexWrap: 'wrap', gap: 6 }}>
+          {lm.roles.map(r => (
+            <span key={r.role} className={`badge${r.model ? ' active' : ''}`} title={r.model || 'unassigned'}>
+              {r.label}: {r.model ?? '—'}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

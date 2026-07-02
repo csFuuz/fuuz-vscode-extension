@@ -7,6 +7,7 @@ import { ConnectionImporter } from '../services/connectionImporter';
 import { TenantDataService } from '../services/tenantDataService';
 import { ConnectionHealth } from '../services/connectionHealth';
 import { AiProviderManager } from '../services/aiProviderManager';
+import { LmStudioManager, ORCHESTRATION_ROLES, ROLE_LABELS } from '../services/lmStudioManager';
 import { fuuzLog } from '../services/logger';
 import type { ConfigInbound, ConfigOutbound, PanelState, ProviderView } from '../webview/config/protocol';
 
@@ -20,6 +21,7 @@ export interface ConfigPanelDeps {
   providerManager: AiProviderManager;
   /** Account label for the signed-in Claude session, if any. */
   getClaudeAccount: () => Promise<string | undefined>;
+  lmStudioManager: LmStudioManager;
   /** Called after any mutation so the host can re-register MCP servers etc. */
   onChanged: () => void;
 }
@@ -165,6 +167,16 @@ export class ConfigPanel {
           await this.postState();
           return;
 
+        case 'discoverLmStudioModels':
+          await vscode.commands.executeCommand('fuuz.lmStudio.discoverModels');
+          await this.postState();
+          return;
+
+        case 'assignLmStudioRoles':
+          await vscode.commands.executeCommand('fuuz.lmStudio.assignRoles');
+          await this.postState();
+          return;
+
         case 'createTool':
           await vscode.commands.executeCommand('fuuz.createTool');
           return;
@@ -229,14 +241,24 @@ export class ConfigPanel {
     );
 
     const account = await this.deps.getClaudeAccount().catch(() => undefined);
+    const lm = this.deps.lmStudioManager;
+    const roleAssignments = lm.roleAssignments();
     const providers: ProviderView[] = this.deps.providerManager.list().map(p => ({
       id: p.id,
       label: p.label,
       description: p.description,
       usesOAuth: p.usesOAuth,
+      isLocalModels: p.isLocalModels === true,
       enabled: this.deps.providerManager.isEnabled(p.id),
       signedIn: p.usesOAuth ? !!account : false,
       account: p.usesOAuth ? account : undefined,
+      localModels: p.isLocalModels
+        ? {
+            models: lm.models().map(m => ({ id: m.id, type: m.type, state: m.state })),
+            roles: ORCHESTRATION_ROLES.map(r => ({ role: r, label: ROLE_LABELS[r], model: roleAssignments[r] })),
+            discoveredAt: lm.discoveredAt(),
+          }
+        : undefined,
     }));
 
     let activeTools: PanelState['activeTools'];
