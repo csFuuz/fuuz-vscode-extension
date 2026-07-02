@@ -258,6 +258,27 @@
         "title": "Sign out of AI Provider (Claude)",
         "category": "Fuuz",
         "icon": "$(sign-out)"
+      },
+      {
+        "command": "fuuz.lmStudio.discoverModels",
+        "title": "Discover LM Studio Models",
+        "category": "Fuuz",
+        "icon": "$(search)"
+      },
+      {
+        "command": "fuuz.lmStudio.assignRoles",
+        "title": "Assign LM Studio Roles",
+        "category": "Fuuz"
+      },
+      {
+        "command": "fuuz.orchestrator.send",
+        "title": "Orchestrator: Send to Model Role",
+        "category": "Fuuz"
+      },
+      {
+        "command": "fuuz.orchestrator.reset",
+        "title": "Orchestrator: Reset Shared Context",
+        "category": "Fuuz"
       }
     ],
     "mcpServerDefinitionProviders": [
@@ -432,6 +453,18 @@
             "profile"
           ],
           "markdownDescription": "OAuth **scopes** requested during Claude sign-in.",
+          "scope": "application"
+        },
+        "fuuz.lmStudio.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:1234",
+          "markdownDescription": "Base URL of your local **LM Studio** server. Model discovery calls `GET {baseUrl}/api/v0/models`; the orchestrator uses the stateful `POST {baseUrl}/api/v1/chat` endpoint.",
+          "scope": "application"
+        },
+        "fuuz.lmStudio.apiToken": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional **bearer token** for the LM Studio server, if you have enabled API authentication. Sent as `Authorization: Bearer <token>`.",
           "scope": "application"
         }
       }

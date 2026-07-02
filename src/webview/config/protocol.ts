@@ -40,18 +40,29 @@ export interface ToolView {
   enabled: boolean;
 }
 
+/** A discovered local model and its orchestration-role assignments (LM Studio). */
+export interface LocalModelsView {
+  models: { id: string; type?: string; state?: string }[];
+  roles: { role: string; label: string; model?: string }[];
+  discoveredAt?: string;
+}
+
 /** An AI host the Fuuz MCP servers can be wired into. */
 export interface ProviderView {
-  id: 'copilot' | 'claude-code' | 'claude-desktop';
+  id: 'copilot' | 'claude-code' | 'claude-desktop' | 'lmstudio';
   label: string;
   description: string;
   enabled: boolean;
   /** Whether this provider authenticates via OAuth sign-in (Claude). */
   usesOAuth: boolean;
+  /** Whether this provider exposes locally-discovered models (LM Studio). */
+  isLocalModels?: boolean;
   /** Whether an OAuth session currently exists (Claude providers only). */
   signedIn: boolean;
   /** Account label for the signed-in session, if any. */
   account?: string;
+  /** Discovered models + role assignments (LM Studio only). */
+  localModels?: LocalModelsView;
 }
 
 export interface PanelState {
@@ -88,7 +99,9 @@ export type ConfigInbound =
   | { type: 'test'; enterpriseId: string; tenantId: string; token?: string }
   | { type: 'setProviderEnabled'; id: ProviderView['id']; enabled: boolean }
   | { type: 'signInProvider'; id: ProviderView['id'] }
-  | { type: 'signOutProvider'; id: ProviderView['id'] };
+  | { type: 'signOutProvider'; id: ProviderView['id'] }
+  | { type: 'discoverLmStudioModels' }
+  | { type: 'assignLmStudioRoles' };
 
 /** Extension → webview. */
 export type ConfigOutbound =

@@ -24,6 +24,16 @@ All notable changes to **Fuuz for VS Code**.
 - **24h sync-staleness nudge** — when the active tenant's MCP data is older than
   24 hours, the extension suggests a resync (one-click *Sync now*) and the context
   doc carries a "stale context" banner, so the copilot's reference data stays fresh.
+- **LM Studio provider (local models)** — a new AI provider that discovers installed
+  models from a local LM Studio server (`GET /api/v0/models`) so setup isn't manual.
+  Discovered models are assigned orchestration roles (orchestrator / coder / reviewer
+  / embeddings) via a guided picker. Configure with `fuuz.lmStudio.baseUrl` / `apiToken`.
+- **Multi-model orchestrator context sharing** — coordinates several LM Studio models
+  as one conversation. The orchestrator holds the canonical transcript and drives
+  LM Studio's **stateful** chat endpoint (`POST /api/v1/chat`), keeping a per-model
+  `response_id` as a cache. Because LM Studio threads are bound to a single model,
+  routing a step to a model with no thread yet **seeds** it from the shared transcript.
+  Commands: *Orchestrator: Send to Model Role* / *Reset Shared Context*.
 
 ## 0.37.0
 

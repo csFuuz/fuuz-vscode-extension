@@ -9,9 +9,11 @@ import * as vscode from 'vscode';
  * `copilot` needs no auth (servers are surfaced through VS Code's own MCP
  * definition provider). The Claude providers are wired by materializing the
  * Fuuz servers into Claude's config files; the Claude *account* is authenticated
- * via OAuth (see {@link ClaudeAuthProvider}).
+ * via OAuth (see {@link ClaudeAuthProvider}). `lmstudio` is a local model host
+ * discovered over its REST API (see {@link LmStudioManager}) — no auth, no MCP
+ * wiring; its models are assigned orchestration roles instead.
  */
-export type AiProviderId = 'copilot' | 'claude-code' | 'claude-desktop';
+export type AiProviderId = 'copilot' | 'claude-code' | 'claude-desktop' | 'lmstudio';
 
 export interface AiProviderDef {
   id: AiProviderId;
@@ -20,6 +22,8 @@ export interface AiProviderDef {
   usesOAuth: boolean;
   /** The `ClaudeTarget` this provider writes to, when applicable. */
   claudeTarget?: 'user' | 'desktop';
+  /** Whether this provider exposes locally-discovered models with role assignment. */
+  isLocalModels?: boolean;
   description: string;
 }
 
@@ -44,6 +48,13 @@ export const AI_PROVIDERS: readonly AiProviderDef[] = [
     usesOAuth: true,
     claudeTarget: 'desktop',
     description: 'Writes the Fuuz MCP servers into Claude Desktop. Sign in with your Claude account.',
+  },
+  {
+    id: 'lmstudio',
+    label: 'LM Studio (local)',
+    usesOAuth: false,
+    isLocalModels: true,
+    description: 'Discovers models from a local LM Studio server and lets you assign them orchestration roles. No manual model entry.',
   },
 ] as const;
 

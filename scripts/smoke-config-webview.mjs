@@ -56,6 +56,8 @@ const SAMPLE = {
     providers: [
       { id: 'copilot', label: 'GitHub Copilot (VS Code)', description: 'Surfaced to Copilot.', enabled: true, usesOAuth: false, signedIn: false },
       { id: 'claude-code', label: 'Claude Code', description: 'Writes ~/.claude.json.', enabled: false, usesOAuth: true, signedIn: false },
+      { id: 'lmstudio', label: 'LM Studio (local)', description: 'Local models.', enabled: true, usesOAuth: false, isLocalModels: true, signedIn: false,
+        localModels: { models: [{ id: 'qwen3-coder', type: 'llm', state: 'loaded' }], roles: [{ role: 'orchestrator', label: 'Orchestrator', model: 'qwen3-coder' }, { role: 'coder', label: 'Coder' }] } },
     ],
     activeTools: {
       enterpriseId: 'ent-acme', tenantId: 'tnt-prod', tenantName: 'Production',
@@ -114,6 +116,20 @@ async function main() {
     assert.ok(btn, 'Enable button not found');
     btn.click();
     assert.ok(posted.some(m => m.type === 'setProviderEnabled'), `posted: ${JSON.stringify(posted)}`);
+  });
+
+  check('LM Studio provider renders models + role assignments', () => {
+    const html = document.body.textContent;
+    assert.ok(html.includes('LM Studio (local)'), 'lmstudio provider missing');
+    assert.ok(html.includes('qwen3-coder'), 'discovered model missing');
+    assert.ok(html.includes('Orchestrator: qwen3-coder'), 'role assignment badge missing');
+  });
+
+  check('Discover models posts {discoverLmStudioModels}', () => {
+    const btn = byText('button', 'Discover models');
+    assert.ok(btn, 'Discover models button not found');
+    btn.click();
+    assert.ok(posted.some(m => m.type === 'discoverLmStudioModels'), `posted: ${JSON.stringify(posted)}`);
   });
 
   // Interaction: add-by-key.
