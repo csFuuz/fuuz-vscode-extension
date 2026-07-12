@@ -1,8 +1,8 @@
 {
   "name": "fuuz-vscode-extension",
-  "displayName": "Fuuz for VS Code",
-  "description": "VS Code extension for Fuuz application management with multi-tenant MCP support",
-  "version": "0.37.0",
+  "displayName": "Fuuz for VS Code (Open Beta)",
+  "description": "VS Code extension for Fuuz application management with multi-tenant MCP support — browse tenants, run schema/flow/screen compliance checks, deploy, and register the Fuuz MCP server for your AI coding assistant",
+  "version": "1.1.0",
   "publisher": "cscott",
   "icon": "media/icon.png",
   "repository": {
@@ -44,7 +44,14 @@
       {
         "command": "fuuz.selectTenant",
         "title": "Select Active Tenant",
-        "category": "Fuuz"
+        "category": "Fuuz",
+        "icon": "$(server-environment)"
+      },
+      {
+        "command": "fuuz.welcome",
+        "title": "Welcome / Getting Started",
+        "category": "Fuuz",
+        "icon": "$(home)"
       },
       {
         "command": "fuuz.replaceKey",
@@ -57,12 +64,6 @@
         "title": "Sync Tenant Data",
         "category": "Fuuz",
         "icon": "$(refresh)"
-      },
-      {
-        "command": "fuuz.createTool",
-        "title": "Create New Tool (Data Flow)",
-        "category": "Fuuz",
-        "icon": "$(sparkle)"
       },
       {
         "command": "fuuz.showErd",
@@ -99,12 +100,6 @@
         "title": "Check Schema Compliance",
         "category": "Fuuz",
         "icon": "$(verified)"
-      },
-      {
-        "command": "fuuz.scaffoldArtifact",
-        "title": "Scaffold Compliant Outline",
-        "category": "Fuuz",
-        "icon": "$(new-file)"
       },
       {
         "command": "fuuz.checkOutlineCompliance",
@@ -155,6 +150,12 @@
         "icon": "$(checklist)"
       },
       {
+        "command": "fuuz.configureComplianceChecks",
+        "title": "Configure Compliance Checks",
+        "category": "Fuuz",
+        "icon": "$(list-selection)"
+      },
+      {
         "command": "fuuz.qaScreen",
         "title": "QA this Screen",
         "category": "Fuuz",
@@ -167,6 +168,18 @@
         "icon": "$(beaker)"
       },
       {
+        "command": "fuuz.qa.setTestUser",
+        "title": "Set QA Test User (per role)",
+        "category": "Fuuz",
+        "icon": "$(account)"
+      },
+      {
+        "command": "fuuz.pushAppToGitHub",
+        "title": "Push App to GitHub (mirror)",
+        "category": "Fuuz",
+        "icon": "$(github)"
+      },
+      {
         "command": "fuuz.runQaInBrowser",
         "title": "Run QA in Browser",
         "category": "Fuuz",
@@ -177,6 +190,12 @@
         "title": "Open QA Result",
         "category": "Fuuz",
         "icon": "$(open-preview)"
+      },
+      {
+        "command": "fuuz.qa.generateUat",
+        "title": "Generate UAT Document",
+        "category": "Fuuz",
+        "icon": "$(file)"
       },
       {
         "command": "fuuz.collectQaLogs",
@@ -226,12 +245,6 @@
         "category": "Fuuz"
       },
       {
-        "command": "fuuz.registerWithClaude",
-        "title": "Register MCP Server with Claude",
-        "category": "Fuuz",
-        "icon": "$(robot)"
-      },
-      {
         "command": "fuuz.fixClaudeMcpConflicts",
         "title": "Fix Claude MCP Conflicts (.mcp.json shadowing)",
         "category": "Fuuz"
@@ -267,16 +280,19 @@
       "fuuzActivityBar": [
         {
           "id": "fuuzTenantSelector",
-          "name": "Connections"
+          "name": "Connections",
+          "icon": "$(plug)"
         },
         {
           "id": "fuuzResourceTree",
           "name": "Resources",
+          "icon": "$(list-tree)",
           "when": "fuuz.tenantSelected"
         },
         {
           "id": "fuuzQaRuns",
           "name": "QA Runs",
+          "icon": "$(beaker)",
           "when": "fuuz.tenantSelected"
         }
       ]
@@ -284,7 +300,7 @@
     "viewsWelcome": [
       {
         "view": "fuuzTenantSelector",
-        "contents": "Connect to Fuuz to browse your app's module groups, flows, screens, scripts and data models — and register the Fuuz MCP server for your AI copilot.\n[Add Connection by API Key](command:fuuz.addConnectionByKey)\n[Configure Connections](command:fuuz.openConfigPanel)\nPaste a Fuuz API key and the tenant, enterprise and environment are detected automatically.",
+        "contents": "Connect to Fuuz to browse your app's module groups, flows, screens, scripts and data models — and register the Fuuz MCP server for your AI copilot.\n[Add Connection by API Key](command:fuuz.addConnectionByKey)\n[Configure Connections](command:fuuz.openConfigPanel)\n[Welcome & Getting Started](command:fuuz.welcome)\nPaste a Fuuz API key and the tenant, enterprise and environment are detected automatically.",
         "when": "!fuuz.hasConfig"
       }
     ],
@@ -386,6 +402,15 @@
           "default": "userAndDesktop",
           "markdownDescription": "Automatically register the Fuuz MCP servers with **Claude** whenever a connection or its token changes, so Claude can use them without running a command.\n\nThe live access token is **embedded** into Claude's private home-dir config (`~/.claude.json` and Claude Desktop, mode-600, never committed) — the same way every other MCP server stores its auth. The project `.mcp.json` is **never** written automatically and never embeds a token. **Restart Claude** to pick up changes.",
           "scope": "application"
+        },
+        "fuuz.compliance.excludedRules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Compliance validation rule-ids to **exclude** from audits (e.g. `setup-required-fields`, `flow-node-descriptions`). Manage interactively with **Fuuz: Configure Compliance Checks**.",
+          "scope": "window"
         }
       }
     },
@@ -399,69 +424,84 @@
       ],
       "view/title": [
         {
+          "command": "fuuz.addConnectionByKey",
+          "when": "view == fuuzTenantSelector",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fuuz.selectTenant",
+          "when": "view == fuuzTenantSelector",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fuuz.syncTenantData",
+          "when": "view == fuuzTenantSelector",
+          "group": "navigation@3"
+        },
+        {
+          "command": "fuuz.openConfigPanel",
+          "when": "view == fuuzTenantSelector",
+          "group": "9_manage"
+        },
+        {
           "command": "fuuz.findResource",
           "when": "view == fuuzResourceTree",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "fuuz.showAppErd",
           "when": "view == fuuzResourceTree",
-          "group": "navigation"
-        },
-        {
-          "command": "fuuz.openInFuuz",
-          "when": "view == fuuzResourceTree || view == fuuzTenantSelector",
-          "group": "navigation"
-        },
-        {
-          "command": "fuuz.createTool",
-          "when": "view == fuuzResourceTree",
-          "group": "navigation"
-        },
-        {
-          "command": "fuuz.scaffoldArtifact",
-          "when": "view == fuuzResourceTree",
-          "group": "navigation"
-        },
-        {
-          "command": "fuuz.qaApp",
-          "when": "view == fuuzResourceTree",
-          "group": "navigation"
+          "group": "navigation@2"
         },
         {
           "command": "fuuz.checkTenant",
           "when": "view == fuuzResourceTree",
-          "group": "navigation"
-        },
-        {
-          "command": "fuuz.refreshQaRuns",
-          "when": "view == fuuzQaRuns",
-          "group": "navigation"
-        },
-        {
-          "command": "fuuz.collectQaLogs",
-          "when": "view == fuuzQaRuns",
-          "group": "navigation"
+          "group": "navigation@3"
         },
         {
           "command": "fuuz.syncTenantData",
           "when": "view == fuuzResourceTree",
-          "group": "navigation"
+          "group": "navigation@4"
         },
         {
-          "command": "fuuz.openConfigPanel",
-          "when": "view == fuuzResourceTree || view == fuuzTenantSelector",
-          "group": "navigation"
+          "command": "fuuz.openInFuuz",
+          "when": "view == fuuzResourceTree",
+          "group": "1_build@1"
         },
         {
-          "command": "fuuz.addConnectionByKey",
-          "when": "view == fuuzTenantSelector",
-          "group": "navigation"
+          "command": "fuuz.configureComplianceChecks",
+          "when": "view == fuuzResourceTree",
+          "group": "2_qa@1"
         },
         {
-          "command": "fuuz.registerWithClaude",
-          "when": "view == fuuzTenantSelector",
-          "group": "1_mcp"
+          "command": "fuuz.generateTenantFixPlan",
+          "when": "view == fuuzResourceTree",
+          "group": "2_qa@2"
+        },
+        {
+          "command": "fuuz.qaApp",
+          "when": "view == fuuzQaRuns",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fuuz.refreshQaRuns",
+          "when": "view == fuuzQaRuns",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fuuz.qa.setTestUser",
+          "when": "view == fuuzQaRuns",
+          "group": "1_qa@1"
+        },
+        {
+          "command": "fuuz.pushAppToGitHub",
+          "when": "view == fuuzQaRuns",
+          "group": "1_qa@2"
+        },
+        {
+          "command": "fuuz.collectQaLogs",
+          "when": "view == fuuzQaRuns",
+          "group": "1_qa@3"
         }
       ],
       "view/item/context": [
@@ -519,6 +559,10 @@
           "group": "inline"
         },
         {
+          "command": "fuuz.qa.generateUat",
+          "when": "view == fuuzQaRuns && viewItem == run"
+        },
+        {
           "command": "fuuz.deleteQaRun",
           "when": "view == fuuzQaRuns && viewItem == run",
           "group": "inline"
@@ -568,7 +612,6 @@
     "@types/vscode": "~1.101.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
-    "@vscode/test-electron": "^2.3.0",
     "@xyflow/react": "^12.11.0",
     "esbuild": "^0.21.5",
     "eslint": "^8.0.0",

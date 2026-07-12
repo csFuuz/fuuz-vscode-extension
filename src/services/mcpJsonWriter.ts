@@ -1,5 +1,13 @@
 import * as vscode from 'vscode';
 import { TenantConfigurationManager } from './tenantConfigurationManager';
+import { parseJsonc } from '../util/jsonc';
+
+/**
+ * `readExisting` outcome: a missing file degrades to `{}` (a fresh write is safe),
+ * a parsed object is merged into, and an unparseable-but-present file returns
+ * `null` so `sync()` can ABORT rather than clobber the user's other MCP servers.
+ */
+type ExistingConfig = Record<string, any> | null;
 
 /**
  * Writes / maintains `.vscode/mcp.json` for the open workspace so the Fuuz MCP
@@ -29,6 +37,14 @@ export class McpJsonWriter {
     if (!uri) return null;
 
     const existing = await this.readExisting(uri);
+    if (existing === null) {
+      // Present but unparseable (and not recoverable as JSONC) — do NOT overwrite:
+      // a blind write would wipe the user's other MCP servers/inputs.
+      vscode.window.showWarningMessage(
+        `Fuuz: ${vscode.workspace.asRelativePath(uri, false)} isn't valid JSON — left untouched. Fix or remove it, then write the MCP config again.`
+      );
+      return null;
+    }
     const inputs: any[] = Array.isArray(existing.inputs)
       ? existing.inputs.filter((i: any) => !String(i?.id ?? '').startsWith('fuuz-token-'))
       : [];
@@ -66,13 +82,29 @@ export class McpJsonWriter {
     return uri;
   }
 
-  private async readExisting(uri: vscode.Uri): Promise<any> {
+  /**
+   * Read the existing `mcp.json`, distinguishing a missing file (→ `{}`, safe to
+   * create fresh) from a present-but-unparseable one (→ `null`, must not be
+   * overwritten). Comment/trailing-comma-bearing JSONC is tolerated so such files
+   * merge instead of erroring.
+   */
+  private async readExisting(uri: vscode.Uri): Promise<ExistingConfig> {
+    let text: string;
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
-      const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
-      return parsed && typeof parsed === 'object' ? parsed : {};
+      text = Buffer.from(bytes).toString('utf8');
+    } catch (err) {
+      // Missing file → fresh write is safe. Any other read error is unexpected;
+      // treat as "leave it alone" to be conservative.
+      if (err instanceof vscode.FileSystemError && err.code === 'FileNotFound') return {};
+      return null; // unreadable for some other reason → don't overwrite
+    }
+    if (!text.trim()) return {};
+    try {
+      const parsed = parseJsonc(text);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
     } catch {
-      return {};
+      return null; // present but unparseable → caller aborts
     }
   }
 }

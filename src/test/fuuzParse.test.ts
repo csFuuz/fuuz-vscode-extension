@@ -266,6 +266,14 @@ test('baseType / isRelationType: scalars vs model references', () => {
   assert.equal(isRelationType('[JSONObject!]'), false); // JSON arrays aren't relations
   assert.equal(isRelationType('Duration'), false); // composite scalar {milliseconds,text}, not a relation
   assert.equal(isRelationType('Duration!'), false);
+  // Embedded value types (value + unit / parts) are scalars, NOT relations — a
+  // `height: Measure` field must not be treated as needing a `heightId` FK.
+  assert.equal(isRelationType('Measure'), false);
+  assert.equal(isRelationType('Measure!'), false);
+  assert.equal(isRelationType('RatioMeasure'), false);
+  assert.equal(isRelationType('Address'), false);
   assert.equal(isRelationType('Tenant'), true);
   assert.equal(isRelationType('[UserTenant!]'), true);
+  // A real FK navigation type is still a relation.
+  assert.equal(isRelationType('PackagingConfiguration'), true);
 });

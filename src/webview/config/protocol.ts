@@ -42,13 +42,6 @@ export interface ToolView {
 
 export interface PanelState {
   enterprises: EnterpriseView[];
-  /** Agent tools for the active tenant (from the last MCP sync). */
-  activeTools?: {
-    enterpriseId: string;
-    tenantId: string;
-    tenantName: string;
-    items: ToolView[];
-  };
 }
 
 export interface ImportResultView {
@@ -67,8 +60,6 @@ export type ConfigInbound =
   | { type: 'setActive'; enterpriseId: string; tenantId: string }
   | { type: 'setDisabled'; enterpriseId: string; tenantId: string; disabled: boolean }
   | { type: 'replaceKey'; enterpriseId: string; tenantId: string }
-  | { type: 'setToolEnabled'; enterpriseId: string; tenantId: string; name: string; enabled: boolean }
-  | { type: 'createTool' }
   | { type: 'test'; enterpriseId: string; tenantId: string; token?: string };
 
 /** Extension → webview. */

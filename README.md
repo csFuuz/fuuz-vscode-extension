@@ -1,5 +1,8 @@
 # Fuuz for VS Code
 
+> 🧪 **Open Beta** — Part of the Fuuz Apps repository, which is in **open beta**.
+> Actively developed and usable; features and APIs may change and you may hit rough edges.
+
 Connect VS Code to your Fuuz environments. Add a connection from an API key, and
 the extension registers the **Fuuz MCP server** so your AI copilot (Copilot Chat /
 agent mode) can work with your app, pulls in what the server exposes, and gives
@@ -128,11 +131,8 @@ tenant's Bearer token, stored in VS Code **SecretStorage** — never in
   enable/disable each. Disabling re-registers the connection through a local
   **gating proxy** that hides the tool from `tools/list` and blocks calls to it
   (enforced, not advisory). Data models lazy-load their fields when expanded.
-- **Create New Tool** — kicks off a guided Copilot Chat (agent mode) that uses the
-  Fuuz MCP tools to design and build a new **data flow** (exposed as a tool),
-  gathering schema/context and confirming the design before making changes.
 - **App context file** — **Generate App Context File** writes `.fuuz/AVAILABLE.md`,
-  a copilot-readable snapshot of the active tenant.
+  a snapshot of the active tenant that your AI coding assistant can read.
 
 ## Sidebar
 
@@ -236,7 +236,6 @@ read/query policy in that tenant.
 - **Fuuz: Execute Flow** — run a data flow
 - **Fuuz: Send Webhook** — post to a webhook topic
 - **Fuuz: Deploy Component Version** — guarded deploy (screen / data flow / data model / saved transform); **off until you enable `fuuz.enableDeploy`**
-- **Fuuz: Create New Tool (Data Flow)** — guided Copilot chat to build a tool
 - **Fuuz: Open in Fuuz** — open the active tenant's app
 - **Fuuz: Write MCP Server Config (.vscode/mcp.json)** — emit/refresh workspace MCP config
 - **Fuuz: Register MCP Server with Claude** — write the Fuuz servers into Claude Code / Claude Desktop config

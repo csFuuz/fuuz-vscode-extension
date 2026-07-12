@@ -521,12 +521,12 @@ function collectSnippets(graphs: FlowGraph[], kind: 'query' | 'inlineScript', mi
  * and queries embedded across flows, and suggest extracting each cluster into a
  * Saved Script / Saved Query referenced from every flow.
  */
-export function analyzeFlowsCrossCutting(graphs: FlowGraph[]): ComplianceReport {
+export function analyzeFlowsCrossCutting(graphs: FlowGraph[], note?: (msg: string) => void): ComplianceReport {
   const queries = collectSnippets(graphs, 'query', 40);
   const scripts = collectSnippets(graphs, 'inlineScript', 60);
 
-  const qClusters = clusterBySimilarity(queries, m => m.meta.flow, SIMILARITY_THRESHOLD, 4);
-  const sClusters = clusterBySimilarity(scripts, m => m.meta.flow, SIMILARITY_THRESHOLD, 4);
+  const qClusters = clusterBySimilarity(queries, m => m.meta.flow, SIMILARITY_THRESHOLD, 4, { note });
+  const sClusters = clusterBySimilarity(scripts, m => m.meta.flow, SIMILARITY_THRESHOLD, 4, { note });
 
   const qFindings: Finding[] = qClusters.map(c => {
     const flows = [...new Set(c.members.map(m => m.meta.flow))];
@@ -550,9 +550,15 @@ export function analyzeFlowsCrossCutting(graphs: FlowGraph[]): ComplianceReport 
     };
   });
 
+  // A check is one snippet; it "fails" when it belongs to a similarity cluster
+  // (i.e. should be extracted). Count clustered *members*, not findings — one
+  // finding can span many snippets, so subtracting per-finding overstated passed.
+  const clustered = (cs: typeof qClusters) => cs.reduce((n, c) => n + c.members.length, 0);
+  const qChecks = Math.max(1, queries.length);
+  const sChecks = Math.max(1, scripts.length);
   const rules: RuleResult[] = [
-    rule('flow-shared-query', 'Similar queries extracted to Saved Queries', Math.max(1, queries.length), Math.max(1, queries.length) - qFindings.length, qFindings),
-    rule('flow-shared-script', 'Similar scripts extracted to Saved Scripts', Math.max(1, scripts.length), Math.max(1, scripts.length) - sFindings.length, sFindings),
+    rule('flow-shared-query', 'Similar queries extracted to Saved Queries', qChecks, Math.max(0, qChecks - clustered(qClusters)), qFindings),
+    rule('flow-shared-script', 'Similar scripts extracted to Saved Scripts', sChecks, Math.max(0, sChecks - clustered(sClusters)), sFindings),
   ];
   return toReport(`All flows (${graphs.length})`, rules);
 }

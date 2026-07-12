@@ -130,6 +130,32 @@ function bigTableBinding(m: ScreenModel, models?: Map<string, ModelInfo>): RuleR
   return rule('screen-perf-binding', 'Large tables are filtered server-side', bound.length, passed, findings);
 }
 
+/** Table columns should carry a description (documents what the column shows). */
+function columnDescriptions(m: ScreenModel): RuleResult {
+  const columns = m.elements.filter(e => e.type === 'TableColumn');
+  if (!columns.length) return rule('screen-column-descriptions', 'Table columns have descriptions', 0, 0, []);
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const c of columns) {
+    if (c.description) passed++;
+    else findings.push({ ruleId: 'screen-column-descriptions', severity: 'info', where: where(c), targetId: c.id, message: `Column "${where(c)}" has no description`, fix: 'Add a short description (Claude can generate + apply via system_screen_design_mutations).' });
+  }
+  return rule('screen-column-descriptions', 'Table columns have descriptions', columns.length, passed, findings);
+}
+
+/** Input/field elements should carry a description. */
+function inputDescriptions(m: ScreenModel): RuleResult {
+  const inputs = m.elements.filter(e => FIELD_TYPES.has(e.type));
+  if (!inputs.length) return rule('screen-input-descriptions', 'Input fields have descriptions', 0, 0, []);
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const f of inputs) {
+    if (f.description) passed++;
+    else findings.push({ ruleId: 'screen-input-descriptions', severity: 'info', where: where(f), targetId: f.id, message: `Input field "${where(f)}" has no description`, fix: 'Add a short description (Claude can generate + apply via system_screen_design_mutations).' });
+  }
+  return rule('screen-input-descriptions', 'Input fields have descriptions', inputs.length, passed, findings);
+}
+
 /** Screen has a meaningful (non-placeholder) name. */
 function naming(m: ScreenModel): RuleResult {
   const verdict = judgeName(m.name, 'Screen');
@@ -162,6 +188,8 @@ export function analyzeScreen(m: ScreenModel, models?: Map<string, ModelInfo>): 
     configSize(m),
     columnTransforms(m),
     fieldTransforms(m),
+    columnDescriptions(m),
+    inputDescriptions(m),
     screenIntegrate(m),
     bigTableBinding(m, models),
     naming(m),

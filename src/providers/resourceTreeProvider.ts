@@ -13,10 +13,10 @@ interface Category {
 /**
  * Resource tree for the active tenant, following the Fuuz application hierarchy:
  *
- *   moduleGroup → { Modules → module → (Screens, Flows, Data Models),
+ *   moduleGroup → { module → (Screens, Flows, Data Models),
  *                   Documents, Scripts, GraphQL }
  */
-export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceItem> {
+export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceItem>, vscode.Disposable {
   private _onDidChangeTreeData = new vscode.EventEmitter<ResourceItem | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
@@ -30,6 +30,10 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
   refresh(): void {
     this.resources = null;
     this._onDidChangeTreeData.fire();
+  }
+
+  dispose(): void {
+    this._onDidChangeTreeData.dispose();
   }
 
   getTreeItem(element: ResourceItem): vscode.TreeItem {
@@ -72,6 +76,9 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
       if (mcp?.environment && Object.keys(mcp.environment).length) {
         roots.push(node('Environment', 'envRoot', mcp.environment));
       }
+      // MCP tool catalog: the tenant's custom data-flow tools AND the platform
+      // system_* tools. Both are shown (system tools under their own sub-node) so
+      // you can see the full set the tenant exposes.
       if (mcp?.tools?.length) {
         roots.push(node('MCP Tools', 'toolsRoot', mcp.tools));
       }
@@ -133,12 +140,11 @@ export class ResourceTreeProvider implements vscode.TreeDataProvider<ResourceIte
     switch (element.contextValue) {
       case 'moduleGroup': {
         const mg = element.node;
-        return [
-          folder('Modules', mg.modules, 'module'),
-          folder('Documents', mg.documents, 'document'),
-          folder('Scripts', mg.scripts, 'script'),
-          folder('GraphQL', mg.graphql, 'graphqlOp'),
-        ];
+        // Modules sit directly under their group — no intermediate "Modules"
+        // folder. (Documents / Scripts / GraphQL are surfaced at the top level.)
+        return ((mg.modules as any[]) ?? []).map((m: any) =>
+          node(labelFor('module', m), 'module', m, m.description)
+        );
       }
       case 'module': {
         const m = element.node;

@@ -38,7 +38,7 @@ test('buildHeadedDriver: shell command puts the prompt before the variadic --mcp
 
 test('buildHeadedDriver: manual omits permission bypass; autonomous adds it', () => {
   assert.ok(!launch.shellCommand.includes('--permission-mode'), 'manual must not bypass permissions');
-  assert.match(launch.prompt, /STOP and ask me to log in/);
+  assert.match(launch.prompt, /STOP and confirm before each major step/);
   const auto = buildHeadedDriver({
     runDirFsPath: '/work/.fuuz/qa/qa-1', briefPath: '.fuuz/qa/qa-1/brief.md',
     mcpConfigPath: '.fuuz/qa/qa-1/mcp.qa.json', artifactsPath: '.fuuz/qa/qa-1/artifacts',

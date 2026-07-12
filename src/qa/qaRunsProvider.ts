@@ -19,7 +19,7 @@ export function activeTenantQaDir(configManager: TenantConfigurationManager): vs
  * their artifacts (brief, plan, collected logs, report). Clicking a file opens
  * it. Refreshes when the active tenant changes.
  */
-export class QaRunsProvider implements vscode.TreeDataProvider<QaItem> {
+export class QaRunsProvider implements vscode.TreeDataProvider<QaItem>, vscode.Disposable {
   private readonly _onDidChange = new vscode.EventEmitter<QaItem | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
 
@@ -27,6 +27,10 @@ export class QaRunsProvider implements vscode.TreeDataProvider<QaItem> {
 
   refresh(): void {
     this._onDidChange.fire();
+  }
+
+  dispose(): void {
+    this._onDidChange.dispose();
   }
 
   getTreeItem(e: QaItem): vscode.TreeItem {

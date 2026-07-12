@@ -41,6 +41,10 @@ export interface DataModelDescriptor {
   modelType?: string;
   /** Estimated record count (when known) — drives indexing/perf rules. */
   recordCount?: number;
+  /** Data-change-capture config (from the model definition), when known. */
+  dcc?: { exposed?: boolean; retentionDays?: number };
+  /** Trigger expressions by operation (create/update), when known. */
+  triggers?: Record<string, string>;
 }
 
 /** Generic descriptor for kinds whose profiles are not yet fully modeled. */

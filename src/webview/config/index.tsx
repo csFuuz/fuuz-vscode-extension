@@ -138,39 +138,6 @@ function EnterpriseCard({ enterprise, probeStatus }: { enterprise: EnterpriseVie
   );
 }
 
-function AgentToolsCard({ at }: { at: NonNullable<PanelState['activeTools']> }) {
-  return (
-    <div className="card">
-      <div className="ent-head">
-        <div>
-          <h2>Agent Tools — {at.tenantName}</h2>
-          <div className="muted">Tools the MCP server exposes to agents. Disable any you don't want agents to use.</div>
-        </div>
-        <button onClick={() => post({ type: 'createTool' })}>+ Create New Tool</button>
-      </div>
-      <div className="muted" style={{ margin: '6px 0' }}>
-        Disabling re-registers this connection through a local <b>gating proxy</b> that hides the tool from{' '}
-        <code>tools/list</code> and blocks calls to it — enforced, not just advisory. (Reload the MCP server / window to apply.)
-      </div>
-      {at.items.length === 0
-        ? <div className="muted">No tools — sync the tenant first.</div>
-        : at.items.map(t => (
-            <div key={t.name} className={`tenant${t.enabled ? '' : ' off'}`}>
-              <span className="name">{t.name}</span>
-              <span className={t.kind === 'dataflow' ? 'badge active' : 'badge'}>{t.kind === 'dataflow' ? 'custom' : 'system'}</span>
-              <span className="muted" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {t.description || ''}
-              </span>
-              <button
-                className="secondary"
-                onClick={() => post({ type: 'setToolEnabled', enterpriseId: at.enterpriseId, tenantId: at.tenantId, name: t.name, enabled: !t.enabled })}
-              >{t.enabled ? 'Disable' : 'Enable'}</button>
-            </div>
-          ))}
-    </div>
-  );
-}
-
 function App() {
   const [state, setState] = useState<PanelState>({ enterprises: [] });
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>({});
@@ -211,7 +178,6 @@ function App() {
       {state.enterprises.map(e => (
         <EnterpriseCard key={e.id} enterprise={e} probeStatus={probeStatus} />
       ))}
-      {state.activeTools && <AgentToolsCard at={state.activeTools} />}
     </>
   );
 }

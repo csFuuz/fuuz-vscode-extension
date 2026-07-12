@@ -5,7 +5,7 @@ import { ConnectionHealth } from '../services/connectionHealth';
 /**
  * Provides the tenant selector tree view in the sidebar
  */
-export class TenantSelectorProvider implements vscode.TreeDataProvider<TenantItem> {
+export class TenantSelectorProvider implements vscode.TreeDataProvider<TenantItem>, vscode.Disposable {
   private _onDidChangeTreeData: vscode.EventEmitter<TenantItem | undefined | null | void> =
     new vscode.EventEmitter<TenantItem | undefined | null | void>();
   readonly onDidChangeTreeData: vscode.Event<TenantItem | undefined | null | void> =
@@ -18,6 +18,10 @@ export class TenantSelectorProvider implements vscode.TreeDataProvider<TenantIte
 
   refresh(): void {
     this._onDidChangeTreeData.fire();
+  }
+
+  dispose(): void {
+    this._onDidChangeTreeData.dispose();
   }
 
   getTreeItem(element: TenantItem): vscode.TreeItem {

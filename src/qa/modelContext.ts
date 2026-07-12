@@ -6,20 +6,42 @@
  */
 import { ModelInfo, SavedTransformInfo, FlowAnalysisContext } from './flowTypes';
 
-/** Lowercase a model name's first character: `ProductionRun` → `productionRun`. */
-export function camelize(name: string): string {
-  return name ? name[0].toLowerCase() + name.slice(1) : name;
-}
 /** Upper-case first character: `productionRun` → `ProductionRun`. */
 export function pascalize(name: string): string {
   return name ? name[0].toUpperCase() + name.slice(1) : name;
 }
 
-const toNum = (v: unknown): number | undefined => {
-  if (v == null || v === '') return undefined;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
-};
+/**
+ * Parse Fuuz's human-formatted estimated record count: `"384"`, `"6k"`, `"59k"`,
+ * `"37m"`, `"1.2m"`. Returns a number, or undefined when unparseable.
+ */
+export function parseRecordCount(v: unknown): number | undefined {
+  if (v == null) return undefined;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+  const s = String(v).trim().toLowerCase().replace(/,/g, '');
+  if (!s) return undefined;
+  const m = s.match(/^([0-9]*\.?[0-9]+)\s*([kmbt])?$/);
+  if (!m) { const n = Number(s); return Number.isFinite(n) ? n : undefined; }
+  const mult: Record<string, number> = { '': 1, k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
+  return Math.round(parseFloat(m[1]) * (mult[m[2] ?? ''] ?? 1));
+}
+
+/** Data-change-capture + trigger config parsed from a model definition. */
+export interface ModelMeta {
+  dcc?: { exposed?: boolean; retentionDays?: number };
+  triggers?: Record<string, string>;
+}
+
+/** Pull DCC + trigger config from a `DataModelDeployment.modelDefinition` JSON. */
+export function parseModelMeta(modelDefinition: any): ModelMeta {
+  const mfgx = modelDefinition?.metadata?.mfgx ?? {};
+  const d = mfgx.dataChangeCapture;
+  const dcc = d && typeof d === 'object'
+    ? { exposed: typeof d.exposed === 'boolean' ? d.exposed : undefined, retentionDays: typeof d.retentionDays === 'number' ? d.retentionDays : undefined }
+    : undefined;
+  const triggers = mfgx.triggers && typeof mfgx.triggers === 'object' ? (mfgx.triggers as Record<string, string>) : undefined;
+  return { dcc, triggers };
+}
 
 /**
  * Index `DataModel` rows by PascalCase name. Rows are expected to carry `name`,
@@ -35,7 +57,8 @@ export function buildModelIndex(rows: Record<string, any>[]): Map<string, ModelI
     map.set(name, {
       name,
       type: type ? String(type).toLowerCase() : undefined,
-      recordCount: toNum(r.estimatedRecordCount),
+      recordCount: parseRecordCount(r.estimatedRecordCount),
+      deploymentId: r.currentDataModelDeploymentId ? String(r.currentDataModelDeploymentId) : undefined,
     });
   }
   return map;

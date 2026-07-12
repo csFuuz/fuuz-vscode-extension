@@ -92,6 +92,8 @@ export interface ModelInfo {
   type?: DataModelType;
   /** Estimated record count, when known (drives query-scoping severity). */
   recordCount?: number;
+  /** Current deployment id (to fetch the model definition for DCC/trigger rules). */
+  deploymentId?: string;
 }
 
 export interface SavedTransformInfo {

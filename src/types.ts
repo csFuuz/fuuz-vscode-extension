@@ -60,15 +60,6 @@ export interface EnterpriseEndpoints {
 }
 
 /**
- * Represents the full tenant configuration with selection state
- */
-export interface TenantConfig {
-  enterprises: Enterprise[];
-  activeEnterpriseId?: string;
-  activeTenantId?: string;
-}
-
-/**
  * Tenant resource hierarchy. Mirrors the Fuuz application structure:
  *
  *   moduleGroup
@@ -204,18 +195,4 @@ export interface TenantResources {
   /** How resources were loaded, for UI messaging. */
   source: 'mcp' | 'manual' | 'none';
   lastSyncedAt: string;
-}
-
-/**
- * MCP Client request/response types
- */
-export interface McpRequest {
-  method: string;
-  params?: Record<string, any>;
-}
-
-export interface McpResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
 }

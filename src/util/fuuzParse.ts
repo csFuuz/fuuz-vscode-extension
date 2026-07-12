@@ -123,9 +123,12 @@ export function parseModelFieldRecords(text: string): Rec[] {
 export const SCALAR_TYPES = new Set([
   'ID', 'String', 'Boolean', 'Int', 'Float', 'DateTime', 'Date', 'Time',
   'JSON', 'JSONObject', 'BigInt', 'Decimal', 'Long', 'Upload', 'Byte', 'UUID', 'Email', 'URL',
-  // Duration is a composite *scalar* ({ milliseconds, text } where text is ISO),
-  // NOT a relation to another model — don't draw an ERD edge or require a FK.
-  'Duration',
+  // Fuuz EMBEDDED value types — composite scalars stored inline (value + unit /
+  // parts), NOT relations to another node. They never have a foreign key, so they
+  // must NOT draw an ERD edge or trigger the FK-pairing / relation-FK-is-ID rules.
+  // Only fields ending in `Id` (e.g. packagingConfigurationId → ID, paired with a
+  // navigation field packagingConfiguration: PackagingConfiguration) are relations.
+  'Duration', 'Measure', 'RatioMeasure', 'Address',
 ]);
 
 /** Strip list/non-null markers (`[`, `]`, `!`) to get a type's base name. */

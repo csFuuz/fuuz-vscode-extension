@@ -106,6 +106,32 @@ const fkRelationPairing: Rule<DataModelDescriptor> = d => {
   return result('fk-relation-pairing', 'Foreign keys pair with object relations', checks, passed, findings);
 };
 
+/**
+ * Relation foreign keys must be typed `ID` (or `ID!`), never `String`. A relation
+ * links `from: <fkField>` → `to: id`; if the FK scalar is `String` the reference
+ * silently breaks. Relation-targeted: only checks FKs that back an object relation.
+ */
+const relationFkIsId: Rule<DataModelDescriptor> = d => {
+  const byName = new Map(d.fields.map(f => [f.name, f]));
+  const findings: Finding[] = [];
+  let checks = 0;
+  let passed = 0;
+  for (const r of d.relations.filter(r => !r.many)) {
+    const fk = byName.get(`${r.field}Id`);
+    if (!fk) continue; // missing FK is the pairing rule's concern, not this one
+    checks++;
+    if (base(fk.type) === 'ID') { passed++; continue; }
+    const nn = fk.type.trim().endsWith('!') ? '!' : '';
+    findings.push({
+      ruleId: 'relation-fk-is-id', severity: 'error',
+      message: `Relation foreign key \`${fk.name}\` must be type \`ID\` (found \`${fk.type}\`) — Fuuz references require ID, not String`,
+      where: fk.name,
+      fix: `Change \`${fk.name}\` to \`ID${nn}\` (keep it non-null only if the relation is required).`,
+    });
+  }
+  return result('relation-fk-is-id', 'Relation foreign keys are typed ID', checks, passed, findings);
+};
+
 /** List relations are non-null lists (`[X!]` / `[X!]!`). */
 const listRelationShape: Rule<DataModelDescriptor> = d => {
   // We only have target + many here; treat the existence of a list relation as
@@ -236,6 +262,51 @@ const uomOnMeasures: Rule<DataModelDescriptor> = d => {
   return result('uom-on-measures', 'Measurements carry an explicit unit', measures.length, passed, findings);
 };
 
+// --- Data-change-capture / indexing rules (need the model definition) ---
+
+/** History/telemetry tables should NOT capture data changes (they ARE the record). */
+const dccHistoryDisabled: Rule<DataModelDescriptor> = d => {
+  if (!d.dcc || typeof d.dcc.exposed !== 'boolean') return result('dcc-history-disabled', 'History/telemetry tables disable data-change capture', 0, 0, []);
+  const isHistory = /history/i.test(d.name);
+  const isTelemetry = /historian|telemetry/i.test(d.name);
+  if (!isHistory && !isTelemetry) return result('dcc-history-disabled', 'History/telemetry tables disable data-change capture', 0, 0, []);
+  if (d.dcc.exposed) {
+    return result('dcc-history-disabled', 'History/telemetry tables disable data-change capture', 1, 0, [{
+      ruleId: 'dcc-history-disabled', severity: isHistory ? 'warn' : 'info',
+      message: `${d.name} has data-change capture enabled — ${isHistory ? 'history' : 'historian/telemetry'} tables should disable it (the table already is the historical record).`,
+      fix: 'Disable data-change capture on this model.',
+    }]);
+  }
+  return result('dcc-history-disabled', 'History/telemetry tables disable data-change capture', 1, 1, []);
+};
+
+/** Transactional data-change retention should stay modest; long-lived data → a History table. */
+const dccRetention: Rule<DataModelDescriptor> = d => {
+  if (d.modelType !== 'transactional' || !d.dcc?.exposed || typeof d.dcc.retentionDays !== 'number') {
+    return result('dcc-retention', 'Transactional retention is bounded', 0, 0, []);
+  }
+  if (d.dcc.retentionDays > 365) {
+    return result('dcc-retention', 'Transactional retention is bounded', 1, 0, [{
+      ruleId: 'dcc-retention', severity: 'info',
+      message: `${d.name} keeps ${d.dcc.retentionDays} days of data-change history — long retention on a transactional table`,
+      fix: 'Keep transactional retention modest (~120 days) and aggregate long-lived data into a denormalized `<entity>History` table.',
+    }]);
+  }
+  return result('dcc-retention', 'Transactional retention is bounded', 1, 1, []);
+};
+
+/** High-frequency tables need a composite ID (set via a create/update trigger) for indexing. */
+const highFrequencyIndex: Rule<DataModelDescriptor> = d => {
+  const n = d.recordCount ?? 0;
+  if (n < 100_000) return result('high-frequency-index', 'High-frequency tables are indexed', 0, 0, []);
+  const hasTrigger = !!(d.triggers && (d.triggers.create || d.triggers.update));
+  return result('high-frequency-index', 'High-frequency tables are indexed', 1, hasTrigger ? 1 : 0, hasTrigger ? [] : [{
+    ruleId: 'high-frequency-index', severity: 'info',
+    message: `${d.name} is high-frequency (~${n.toLocaleString()} records) with no id-composition trigger`,
+    fix: 'Add a composite ID via the create/update trigger (a JSONata transform) for effective indexing — ask Claude to propose one.',
+  }]);
+};
+
 /** The ordered data-model profile. */
 export const DATA_MODEL_RULES: Rule<DataModelDescriptor>[] = [
   idPrimaryKey,
@@ -243,6 +314,7 @@ export const DATA_MODEL_RULES: Rule<DataModelDescriptor>[] = [
   camelCaseFields,
   knownScalarTypes,
   fkRelationPairing,
+  relationFkIsId,
   listRelationShape,
   activeFlag,
   fieldDescriptions,
@@ -251,4 +323,7 @@ export const DATA_MODEL_RULES: Rule<DataModelDescriptor>[] = [
   setupReferences,
   statusOrActive,
   uomOnMeasures,
+  dccHistoryDisabled,
+  dccRetention,
+  highFrequencyIndex,
 ];

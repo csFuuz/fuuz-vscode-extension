@@ -31,6 +31,14 @@ interface DriverOptions {
   targetUrl: string;
   /** Full authority: launch Claude with permission prompts bypassed. */
   autonomous: boolean;
+  /** The single role this session tests (role-per-session model). */
+  roleName?: string;
+  /**
+   * When a sandboxed test user is pre-saved for this role, the env var names the
+   * terminal sets for its username/password so Claude can log in automatically
+   * (values are set on the terminal env, never written to disk).
+   */
+  testUser?: { userEnvVar: string; passEnvVar: string };
   /**
    * Optionally also expose the active tenant's Fuuz MCP server to the session so
    * Claude can cross-reference schema / data / logs while testing. The token is
@@ -70,11 +78,16 @@ export function buildHeadedDriver(opts: DriverOptions): DriverLaunch {
   }
   const mcpConfig = { mcpServers };
 
+  const role = opts.roleName ? `the "${opts.roleName}" role` : 'the role under test';
+  const loginLine = opts.testUser
+    ? `Log in to Fuuz at ${opts.targetUrl} using the sandboxed test user for ${role}: username from the ${opts.testUser.userEnvVar} env var and password from ${opts.testUser.passEnvVar}. Do NOT print the password.`
+    : `Ask me to log in to Fuuz at ${opts.targetUrl} as ${role} (one-time), then continue.`;
   const authorityLine = opts.autonomous
-    ? `Once I log a persona in, proceed with COMPLETE AUTHORITY for that persona — do everything the brief requires without asking; only pause for the one-time persona login.`
-    : `For each persona, STOP and ask me to log in manually, and confirm before each major step.`;
+    ? `After login, proceed with COMPLETE AUTHORITY as ${role} — do everything the brief requires without asking.`
+    : `After login, STOP and confirm before each major step.`;
   const prompt = [
-    `Execute the QA brief in ${opts.briefPath} against ${opts.targetUrl} using the Playwright MCP browser tools.`,
+    `Execute the QA brief in ${opts.briefPath} against ${opts.targetUrl} as ${role}, using the Playwright MCP browser tools.`,
+    loginLine,
     authorityLine,
     opts.fuuz ? `The Fuuz MCP server for this tenant is also available — use it to cross-reference schema, data, and logs.` : '',
     `Save all screenshots/GIFs under ${opts.artifactsPath} (never the workspace root), record any browser console/network errors,`,

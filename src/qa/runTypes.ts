@@ -71,7 +71,5 @@ export interface QaPlan {
   runDir: string;
 }
 
-export type RunStatus = 'planned' | 'running' | 'passed' | 'failed' | 'cancelled';
-
 /** Where a finding came from — correlated across the browser and Fuuz. */
 export type FindingSource = 'chrome-console' | 'fuuz-devconsole' | 'fuuz-spanlog' | 'fuuz-dataflowlog' | 'integration-log' | 'ux';

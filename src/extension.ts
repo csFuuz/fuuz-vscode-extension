@@ -3,6 +3,7 @@ import { TenantConfigurationManager } from './services/tenantConfigurationManage
 import { TokenStore } from './services/tokenStore';
 import { TenantSelectorProvider } from './providers/tenantSelectorProvider';
 import { ResourceTreeProvider } from './providers/resourceTreeProvider';
+import { WelcomePanel } from './ui/welcomePanel';
 import { FuuzMcpClient } from './services/fuuzMcpClient';
 import { TenantDataService } from './services/tenantDataService';
 import { FuuzMcpServerProvider } from './services/mcpServerProvider';
@@ -22,15 +23,17 @@ import { buildModelGraph, buildSetGraph } from './util/fuuzParse';
 import type { ErdService } from './util/erdTypes';
 import { fuuzLog } from './services/logger';
 import { isAbortError } from './util/abort';
+import { mapLimit } from './util/concurrency';
 import { runCompliance } from './qa/complianceChecker';
 import { runFlowGraphCompliance, analyzeFlowsCrossCutting } from './qa/flowAnalysis';
 import { adaptFlow, FLOW_ELEMENT_FIELDS } from './qa/flowDescriptor';
 import type { FlowGraph, FlowAnalysisContext, FlowVersionInfo } from './qa/flowTypes';
-import { buildModelIndex, buildSavedTransformIndex } from './qa/modelContext';
+import { buildModelIndex, buildSavedTransformIndex, parseModelMeta, type ModelMeta } from './qa/modelContext';
 import { decodeTronPayload } from './util/tron';
 import { runScreenCompliance } from './qa/screenAnalysis';
 import { buildScreenModel } from './qa/screenDescriptor';
 import { buildFlowFixPlan, buildTenantFixPlan, type FlowFixInput } from './qa/remediation';
+import { catalogRules, filterReport } from './qa/ruleCatalog';
 import { runTenantAudit } from './qa/tenantAudit';
 import { scaffoldFor } from './qa/scaffolds';
 import { parseOutline, kindFromFileName, OutlineParseError } from './qa/outline';
@@ -38,11 +41,14 @@ import { ReportPanel } from './qa/reportPanel';
 import { buildQaPlan, planToBrief } from './qa/planGenerator';
 import { deriveTarget } from './qa/qaTarget';
 import type { Persona, RunScope } from './qa/runTypes';
+import { rolesFromRecords, planRoleRun, roleTestUserKey, type TenantRole } from './qa/roles';
+import { buildUatModel, renderUatMarkdown, renderUatWordHtml, type UatStep } from './qa/uatDoc';
+import { planMirror, type AppComponent, type McpTool as MirrorTool } from './github/mirrorPlan';
 import { collectFuuzLogs, type LogQueryFn, type CollectedLog } from './qa/logCollector';
 import { QaRunsProvider, QaItem, activeTenantQaDir } from './qa/qaRunsProvider';
 import { buildHeadedDriver } from './qa/driver';
 import { QaResultPanel } from './qa/qaResultPanel';
-import type { ArtifactKind, ComplianceReport, DataModelDescriptor } from './qa/complianceTypes';
+import type { ArtifactKind, ComplianceReport, DataModelDescriptor, Finding } from './qa/complianceTypes';
 
 export async function activate(context: vscode.ExtensionContext) {
   try {
@@ -62,11 +68,11 @@ export async function activate(context: vscode.ExtensionContext) {
     const resourceTreeProvider = new ResourceTreeProvider(configManager, resourceService);
     const statusBar = new FuuzStatusBar(configManager, health);
     const mcpJsonWriter = new McpJsonWriter(configManager);
-    const claudeMcpWriter = new ClaudeMcpWriter(configManager, tokenStore, context.extensionUri);
+    const claudeMcpWriter = new ClaudeMcpWriter(configManager, tokenStore);
     const contextDocWriter = new ContextDocWriter(configManager, resourceService);
 
     // Register the Fuuz MCP servers with VS Code (guarded for older hosts).
-    const mcpServerProvider = new FuuzMcpServerProvider(configManager, tokenStore, context.extensionUri);
+    const mcpServerProvider = new FuuzMcpServerProvider(configManager, tokenStore);
     if (typeof vscode.lm?.registerMcpServerDefinitionProvider === 'function') {
       context.subscriptions.push(
         vscode.lm.registerMcpServerDefinitionProvider(FuuzMcpServerProvider.PROVIDER_ID, mcpServerProvider)
@@ -75,13 +81,19 @@ export async function activate(context: vscode.ExtensionContext) {
       fuuzLog('this VS Code build lacks the MCP API; falling back to .vscode/mcp.json only.');
     }
 
-    vscode.window.registerTreeDataProvider('fuuzTenantSelector', tenantSelectorProvider);
+    context.subscriptions.push(
+      vscode.commands.registerCommand('fuuz.welcome', () => WelcomePanel.show(context)),
+      vscode.window.registerTreeDataProvider('fuuzTenantSelector', tenantSelectorProvider),
+      tenantSelectorProvider,
+      resourceTreeProvider
+    );
     const resourceView = vscode.window.createTreeView('fuuzResourceTree', { treeDataProvider: resourceTreeProvider });
     context.subscriptions.push(resourceView);
 
     // QA runs view + its commands (list runs, refresh, collect Fuuz logs for a run).
     const qaRunsProvider = new QaRunsProvider(configManager);
     context.subscriptions.push(
+      qaRunsProvider,
       vscode.window.createTreeView('fuuzQaRuns', { treeDataProvider: qaRunsProvider }),
       vscode.commands.registerCommand('fuuz.refreshQaRuns', () => qaRunsProvider.refresh()),
       vscode.commands.registerCommand('fuuz.collectQaLogs', (arg?: unknown) =>
@@ -98,12 +110,45 @@ export async function activate(context: vscode.ExtensionContext) {
       )
     );
 
+    // First-run: show the Welcome / getting-started panel once. Never let this
+    // block activation (e.g. headless/test hosts without a webview surface).
+    try { WelcomePanel.maybeShowOnFirstRun(context); } catch { /* non-fatal */ }
+
     const updateResourceMessage = () => {
+      const ent = configManager.getActiveEnterprise();
       const t = configManager.getActiveTenant();
-      const snap = t ? configManager.getCachedResources(t.id) : null;
-      resourceView.message = snap?.lastSyncedAt
-        ? `${snap.source === 'mcp' ? 'MCP' : 'manual'} · last synced ${new Date(snap.lastSyncedAt).toLocaleString()}`
-        : undefined;
+      if (!t) { resourceView.message = undefined; return; }
+      const snap = configManager.getCachedResources(t.id);
+      const state = ent ? health.get(ent.id, t.id) : 'unknown';
+      const conn = state === 'ok' ? '🟢 Connected'
+        : state === 'unauthorized' ? '🟡 Auth error (check API key)'
+        : state === 'unreachable' ? '🔴 Disconnected'
+        : '⚪ Connection not checked';
+      const synced = snap?.lastSyncedAt
+        ? ` · ${snap.source === 'mcp' ? 'MCP' : 'manual'} · last synced ${new Date(snap.lastSyncedAt).toLocaleString()}`
+        : '';
+      resourceView.message = `${conn}${synced}`;
+    };
+
+    // Actively verify the active tenant's MCP endpoint and record TRUE health
+    // (a stored key is NOT proof of a live connection). Fire-and-forget.
+    const probeActiveTenant = async () => {
+      const ent = configManager.getActiveEnterprise();
+      const t = configManager.getActiveTenant();
+      if (!ent || !t) return;
+      const token = await tokenStore.getToken(ent.id, t.id);
+      if (!token) { health.set(ent.id, t.id, 'unreachable', 'No API key set'); return; }
+      try {
+        const probes = await mcpClient.probeEndpoints(configManager.endpointsFor(ent), token);
+        const mcp = probes.find(p => p.key === 'mcp');
+        const state: import('./services/connectionHealth').HealthState = !mcp ? 'unknown'
+          : mcp.state === 'available' ? 'ok'
+          : (mcp.state === 'unauthorized' || mcp.state === 'forbidden') ? 'unauthorized'
+          : 'unreachable';
+        health.set(ent.id, t.id, state, mcp?.detail);
+      } catch (e) {
+        health.set(ent.id, t.id, 'unreachable', e instanceof Error ? e.message : String(e));
+      }
     };
 
     // A single place to react to any connection/selection/token change.
@@ -117,6 +162,34 @@ export async function activate(context: vscode.ExtensionContext) {
       ConfigPanel.refreshIfOpen();
       updateResourceMessage();
       void updateContextFlags(configManager);
+    };
+
+    // Background-refresh a tenant's resources when its cache is missing, empty,
+    // or stale (>30 min). Used on startup AND whenever the active tenant changes,
+    // so switching to a tenant (to build across several) pulls live resources
+    // immediately instead of leaving the panel on a possibly-empty cached snapshot.
+    // The tree also self-heals on render; this just makes the refresh eager, and
+    // dedupes concurrent switches so a rapid A→B→A doesn't stack redundant syncs.
+    const refreshingTenants = new Set<string>();
+    const refreshTenantIfStale = async (tenant: import('./types').Tenant) => {
+      if (refreshingTenants.has(tenant.id)) return;
+      const snap = configManager.getCachedResources(tenant.id);
+      const hasContent = !!snap && (
+        (snap.mcp?.application?.length ?? 0) > 0 ||
+        (snap.mcp?.systemDataModels?.length ?? 0) > 0 ||
+        (snap.mcp?.tools?.length ?? 0) > 0
+      );
+      const ageMs = snap?.lastSyncedAt ? Date.now() - new Date(snap.lastSyncedAt).getTime() : Infinity;
+      if (hasContent && ageMs <= 30 * 60 * 1000) return; // fresh + populated → nothing to do
+      refreshingTenants.add(tenant.id);
+      try {
+        await resourceService.syncTenantResources(tenant);
+        onChanged();
+      } catch (err) {
+        fuuzLog(`resource refresh failed for ${tenant.name}: ${errMsg(err)}`);
+      } finally {
+        refreshingTenants.delete(tenant.id);
+      }
     };
 
     registerCommands(context, {
@@ -138,6 +211,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
     await updateContextFlags(configManager);
     updateResourceMessage();
+    // Verify the live connection on startup so the Resources panel shows a TRUE
+    // state (not just "a key is stored"). Fire-and-forget; updates via health event.
+    void probeActiveTenant();
 
     // Startup IO only matters when connections exist. For an installed-but-
     // unconfigured workspace, skip the Claude auto-register file reads and the
@@ -149,26 +225,24 @@ export async function activate(context: vscode.ExtensionContext) {
       // Warn if a project .mcp.json shadows the working user-scoped Fuuz servers
       // (env-var token refs that fail in Claude unless exported → /mcp auth errors).
       void (async () => {
-        const shadows = await claudeMcpWriter.projectShadowedServers().catch(() => []);
-        if (shadows.length === 0) return;
-        const FIX = 'Remove from .mcp.json';
-        const choice = await vscode.window.showWarningMessage(
-          `Fuuz: your project .mcp.json defines ${shadows.length} Fuuz server(s) with env-var tokens that override the working user-scoped ones — Claude will fail to authenticate them unless you export those vars. Remove them so Claude uses the embedded servers?`,
-          FIX, 'Keep'
-        );
-        if (choice === FIX) await vscode.commands.executeCommand('fuuz.fixClaudeMcpConflicts');
+        try {
+          const shadows = await claudeMcpWriter.projectShadowedServers().catch(() => []);
+          if (shadows.length === 0) return;
+          const FIX = 'Remove from .mcp.json';
+          const choice = await vscode.window.showWarningMessage(
+            `Fuuz: your project .mcp.json defines ${shadows.length} Fuuz server(s) with env-var tokens that override the working user-scoped ones — Claude will fail to authenticate them unless you export those vars. Remove them so Claude uses the embedded servers?`,
+            FIX, 'Keep'
+          );
+          if (choice === FIX) await vscode.commands.executeCommand('fuuz.fixClaudeMcpConflicts');
+        } catch (err) {
+          fuuzLog(`startup .mcp.json shadow check failed: ${errMsg(err)}`);
+        }
       })();
 
-      // Auto-refresh the active tenant on startup if its cache is stale (>30 min).
+      // Auto-refresh the active tenant on startup if its cache is missing/empty/stale.
       void (async () => {
         const t = configManager.getActiveTenant();
-        if (!t) return;
-        const snap = configManager.getCachedResources(t.id);
-        const ageMs = snap?.lastSyncedAt ? Date.now() - new Date(snap.lastSyncedAt).getTime() : Infinity;
-        if (ageMs > 30 * 60 * 1000) {
-          await resourceService.syncTenantResources(t).catch(err => fuuzLog(`startup refresh failed: ${errMsg(err)}`));
-          onChanged();
-        }
+        if (t) await refreshTenantIfStale(t);
       })();
     }
 
@@ -178,6 +252,14 @@ export async function activate(context: vscode.ExtensionContext) {
       health.onDidChange(() => {
         tenantSelectorProvider.refresh();
         statusBar.update();
+        updateResourceMessage();
+      }),
+      // Re-verify the live connection whenever the active tenant changes, and
+      // eagerly (re)load its resources so a switched-to tenant shows live data.
+      configManager.onDidChangeActiveTenant(() => {
+        void probeActiveTenant();
+        const t = configManager.getActiveTenant();
+        if (t) void refreshTenantIfStale(t);
       }),
       vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('fuuz')) onChanged();
@@ -251,14 +333,21 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       validateInput: v => (v.trim() ? undefined : 'An API key is required'),
     });
     if (!newKey) return;
-    await tokenStore.setToken(enterprise.id, tenant.id, newKey.trim());
-    const probe = await mcpClient.initializeMcp(configManager.endpointsFor(enterprise).mcp, newKey.trim());
-    health.set(enterprise.id, tenant.id, probe.ok ? 'ok' : 'unauthorized', probe.ok ? undefined : probe.message);
-    resourceService.forgetUnauthorizedWarning(tenant.id); // new key → re-check perms
-    await resourceService.syncTenantResources(tenant).catch(err => fuuzLog(`sync after key replace failed: ${errMsg(err)}`));
-    deps.onChanged();
-    if (probe.ok) vscode.window.showInformationMessage(`Fuuz: key updated — ${tenant.name} connected.`);
-    else vscode.window.showWarningMessage(`Fuuz: key updated but validation failed — ${probe.message}`);
+    try {
+      await tokenStore.setToken(enterprise.id, tenant.id, newKey.trim());
+      const probe = await mcpClient.initializeMcp(configManager.endpointsFor(enterprise).mcp, newKey.trim());
+      health.set(enterprise.id, tenant.id, probe.ok ? 'ok' : 'unauthorized', probe.ok ? undefined : probe.message);
+      resourceService.forgetUnauthorizedWarning(tenant.id); // new key → re-check perms
+      await resourceService.syncTenantResources(tenant).catch(err => fuuzLog(`sync after key replace failed: ${errMsg(err)}`));
+      deps.onChanged();
+      if (probe.ok) vscode.window.showInformationMessage(`Fuuz: key updated — ${tenant.name} connected.`);
+      else vscode.window.showWarningMessage(`Fuuz: key updated but validation failed — ${probe.message}`);
+    } catch (error) {
+      // The key was stored but validation/sync failed (e.g. network error) — keep
+      // the UI consistent and tell the user the state, mirroring selectTenant.
+      deps.onChanged();
+      vscode.window.showErrorMessage(`Fuuz: couldn't validate the new key for ${tenant.name} — ${errMsg(error)}. Try Sync Tenant Data once you're back online.`);
+    }
   });
 
   register('fuuz.addConnectionByKey', async () => {
@@ -543,15 +632,18 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       if (!graph) return undefined;
       const ctx = await buildFlowContext(resourceService, tenant, signal);
       const info = ctx.models?.get(graph.name) ?? ctx.models?.get(model);
+      const meta = info?.deploymentId ? await fetchModelMeta(resourceService, tenant, info.deploymentId, signal) : {};
       const descriptor: DataModelDescriptor = {
         kind: 'dataModel',
         name: graph.name,
-        fields: graph.fields.map(f => ({ name: f.name, type: f.type })),
+        fields: graph.fields.map(f => ({ name: f.name, type: f.type, description: f.description })),
         relations: graph.relations.map(r => ({ field: r.field, target: r.target, many: r.many })),
         modelType: info?.type,
         recordCount: info?.recordCount,
+        dcc: meta.dcc,
+        triggers: meta.triggers,
       };
-      return runCompliance(descriptor);
+      return applyExcluded(runCompliance(descriptor));
     };
 
     await withCancellable(`Fuuz: checking ${model}…`, async signal => {
@@ -579,7 +671,7 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
       const bytes = await vscode.workspace.fs.readFile(uri);
       const text = Buffer.from(bytes).toString('utf8');
       const descriptor = parseOutline(kind, text, fileName.replace(/\.[^.]+\.\w+$/, ''));
-      const report = runCompliance(descriptor);
+      const report = applyExcluded(runCompliance(descriptor));
       ReportPanel.show(context, report);
       const msg = `Fuuz: ${report.name} — ${report.score}% compliant (${report.passed}/${report.checks} checks).`;
       if (report.score >= 90) vscode.window.showInformationMessage(msg);
@@ -595,7 +687,7 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     const node = nodeArg(arg);
     const name = node?.name || (await vscode.window.showInputBox({ title: 'QA a Screen', prompt: 'Screen name', ignoreFocusOut: true }));
     if (!name) return;
-    await startQaRun(configManager, tokenStore, { kind: 'screen', name });
+    await startQaRun(configManager, tokenStore, resourceService, context.secrets, { kind: 'screen', name });
   });
 
   register('fuuz.qaApp', async () => {
@@ -608,7 +700,135 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
         for (const s of m.screens ?? []) if (s.name) screens.push(s.name);
       }
     }
-    await startQaRun(configManager, tokenStore, { kind: 'app', name: tenant.name, screens });
+    await startQaRun(configManager, tokenStore, resourceService, context.secrets, { kind: 'app', name: tenant.name, screens });
+  });
+
+  // Push the as-built app to a GitHub repo — Resources-tree layout, custom tools
+  // only, no system data models. Multi-dev safe (tenant branch); supervised push.
+  register('fuuz.pushAppToGitHub', async () => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const snap = configManager.getCachedResources(tenant.id)?.mcp;
+    if (!snap) { vscode.window.showWarningMessage('Fuuz: sync the tenant first (no cached resources).'); return; }
+
+    // Mirror ONLY the current app(s). An "app" is a module group; a tenant can
+    // hold many, so ask which one(s) to mirror rather than dumping the whole tenant.
+    const allGroups = (snap.application ?? []).filter((mg: any) => mg?.name);
+    if (allGroups.length === 0) { vscode.window.showWarningMessage('Fuuz: no apps (module groups) found in the tenant snapshot.'); return; }
+    type AppPick = vscode.QuickPickItem & { mg: any };
+    const appItems: AppPick[] = allGroups.map((mg: any) => ({
+      label: mg.name,
+      description: `${(mg.modules ?? []).length} module(s)`,
+      mg,
+    }));
+    const chosen = await vscode.window.showQuickPick(appItems, {
+      canPickMany: true,
+      title: 'Mirror to GitHub — select the app(s) to mirror',
+      placeHolder: 'Only the selected app(s) resources are mirrored (not the whole tenant)',
+    });
+    if (!chosen || chosen.length === 0) return;
+    const selectedGroups = chosen.map(c => c.mg);
+
+    const components: AppComponent[] = [];
+    const push = (kind: AppComponent['kind'], it: any, mg: string, module: string) => {
+      if (it?.id && it?.name) components.push({ kind, id: it.id, name: it.name, moduleGroup: mg, module, definition: it });
+    };
+    for (const mg of selectedGroups) {
+      for (const m of mg.modules ?? []) {
+        (m.screens ?? []).forEach((s: any) => push('screen', s, mg.name, m.name));
+        (m.flows ?? []).forEach((f: any) => push('flow', f, mg.name, m.name));
+        (m.dataModels ?? []).forEach((d: any) => push('dataModel', d, mg.name, m.name));
+      }
+      (mg.documents ?? []).forEach((d: any) => push('document', d, mg.name, '(group)'));
+      (mg.scripts ?? []).forEach((s: any) => push('script', s, mg.name, '(group)'));
+      (mg.graphql ?? []).forEach((q: any) => push('query', q, mg.name, '(group)'));
+    }
+    // Intentionally NOT mirrored: other apps, tenant-global scripts/queries/
+    // documents (snap.scripts/queries/documents), and system data models.
+    const tools: MirrorTool[] = [];
+
+    const plan = planMirror(components, tools);
+    if (plan.files.length === 0) { vscode.window.showInformationMessage('Fuuz: nothing to mirror.'); return; }
+
+    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
+    const picked = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, canSelectMany: false, openLabel: 'Mirror into this repo folder', title: 'Select the local GitHub repo folder' });
+    const base = picked?.[0] ?? (workspace ? vscode.Uri.joinPath(workspace, '.fuuz', 'mirror', tenant.id.replace(/[^a-z0-9._-]+/gi, '-')) : undefined);
+    if (!base) { vscode.window.showWarningMessage('Fuuz: pick a folder (or open a workspace) to mirror into.'); return; }
+
+    await withCancellable(`Fuuz: writing ${plan.files.length} files…`, async () => {
+      for (const f of plan.files) {
+        const uri = vscode.Uri.joinPath(base, ...f.path.split('/'));
+        await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, '..'));
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(f.content, 'utf8'));
+      }
+    });
+
+    // Supervised git: tenant branch (multi-dev safe), stage + commit; push is left to you.
+    const branch = `tenant/${tenant.id.replace(/[^a-z0-9._-]+/gi, '-')}`;
+    const term = vscode.window.createTerminal({ name: `Fuuz Mirror — ${tenant.name}`, cwd: base });
+    term.show();
+    term.sendText(`git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init`, true);
+    term.sendText(`git checkout -B ${branch} 2>/dev/null || true`, true);
+    term.sendText(`git add -A && git status`, true);
+    const appLabel = selectedGroups.map((g: any) => g.name).join(', ');
+    vscode.window.showInformationMessage(
+      `Fuuz: mirrored ${plan.files.length} files for app(s) "${appLabel}" to ${vscode.workspace.asRelativePath(base, false)} on branch ${branch}. Only these app(s) resources were included — other apps, tenant-global scripts/queries/documents, custom MCP tools, and system data models were not. Review, then commit & push. UAT/QA docs push to the repo wiki as a follow-up.`
+    );
+  });
+
+  // Generate a manual UAT document (Word-openable .doc + .md) from a QA run.
+  register('fuuz.qa.generateUat', async (arg?: unknown) => {
+    const runUri: vscode.Uri | undefined = (arg as vscode.TreeItem)?.resourceUri ?? undefined;
+    if (!runUri) { vscode.window.showWarningMessage('Fuuz: run this on a QA run in the QA Runs view.'); return; }
+    const tenant = configManager.getActiveTenant();
+    let plan: any;
+    try {
+      const buf = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(runUri, 'plan.json'));
+      plan = JSON.parse(Buffer.from(buf).toString('utf8'));
+    } catch { vscode.window.showWarningMessage('Fuuz: could not read this run’s plan.json.'); return; }
+
+    const roleName = plan?.personas?.[0]?.name ?? 'user';
+    const steps: UatStep[] = (plan?.steps ?? []).map((s: any) => ({
+      title: String(s.title ?? 'Step'),
+      action: String(s.detail ?? ''),
+      expected: 'Confirm the result matches the description; note any discrepancy.',
+    }));
+    const model = buildUatModel({
+      appName: String(plan?.scope?.name ?? 'App'),
+      tenantName: tenant?.name ?? 'tenant',
+      roleName,
+      targetUrl: String(plan?.target?.url ?? ''),
+      generatedAt: new Date().toISOString(),
+      steps,
+    });
+    const safe = roleName.replace(/[^a-z0-9._-]+/gi, '-');
+    const docUri = vscode.Uri.joinPath(runUri, `uat-${safe}.doc`);
+    await vscode.workspace.fs.writeFile(docUri, Buffer.from(renderUatWordHtml(model), 'utf8'));
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(runUri, `uat-${safe}.md`), Buffer.from(renderUatMarkdown(model), 'utf8'));
+    await vscode.commands.executeCommand('fuuz.refreshQaRuns');
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(vscode.Uri.joinPath(runUri, `uat-${safe}.md`)), { preview: false });
+    vscode.window.showInformationMessage(`Fuuz: UAT document generated for "${roleName}" — uat-${safe}.doc opens in Word (editable), uat-${safe}.md previews here.`);
+  });
+
+  // Pre-save a sandboxed test-user login per role, used for concurrent QA runs.
+  register('fuuz.qa.setTestUser', async () => {
+    const tenant = configManager.getActiveTenant();
+    if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
+    const roles = await fetchTenantRoles(resourceService, tenant);
+    let roleId: string | undefined;
+    if (roles.length) {
+      const pick = await vscode.window.showQuickPick(roles.map(r => ({ label: r.name, description: r.id, id: r.id })), { title: 'QA test user — pick a role', ignoreFocusOut: true });
+      roleId = pick?.id;
+    } else {
+      roleId = await vscode.window.showInputBox({ title: 'QA test user — role id', prompt: 'Role id/name', ignoreFocusOut: true });
+    }
+    if (!roleId) return;
+    const username = await vscode.window.showInputBox({ title: `Test user for "${roleId}"`, prompt: 'Fuuz username/email for this role', ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : 'Required' });
+    if (!username) return;
+    const password = await vscode.window.showInputBox({ title: `Test user for "${roleId}"`, prompt: 'Password (stored in VS Code SecretStorage)', password: true, ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : 'Required' });
+    if (!password) return;
+    await context.secrets.store(roleTestUserKey(tenant.id, roleId), JSON.stringify({ username: username.trim(), password }));
+    vscode.window.showInformationMessage(`Fuuz: saved sandbox test user for role "${roleId}" (stored securely).`);
   });
 
   // Flow compliance: analyze a real deployed flow's nodes over MCP.
@@ -621,14 +841,13 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     const flow = { id: flowId, name: node?.name ?? 'Flow', type: node?.type };
 
     await withCancellable(`Fuuz: analyzing ${flow.name}…`, async signal => {
-      const cache: FlowFetchCache = {};
-      const graph = await fetchFlowGraph(resourceService, tenant, flow, cache, signal);
+      const graph = await fetchFlowGraph(resourceService, tenant, flow, signal);
       if (!graph) {
         vscode.window.showWarningMessage("Fuuz: couldn't read this flow's nodes over MCP (DataFlowElement). Confirm the tenant connection and try again.");
         return;
       }
       const ctx = await buildFlowContext(resourceService, tenant, signal);
-      const report = runFlowGraphCompliance(graph, ctx);
+      const report = applyExcluded(runFlowGraphCompliance(graph, ctx));
       ReportPanel.show(context, report);
       const msg = `Fuuz: ${flow.name} — ${report.score}% (${report.passed}/${report.checks} checks, ${graph.nodes.length} nodes).`;
       if (report.score >= 90) vscode.window.showInformationMessage(msg);
@@ -652,7 +871,7 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
         return;
       }
       const ctx = await buildFlowContext(resourceService, tenant, signal);
-      const report = runScreenCompliance(model, ctx.models);
+      const report = applyExcluded(runScreenCompliance(model, ctx.models));
       ReportPanel.show(context, report);
       const msg = `Fuuz: ${screen.name} — ${report.score}% (${report.passed}/${report.checks} checks, ${model.elements.length} elements).`;
       if (report.score >= 90) vscode.window.showInformationMessage(msg);
@@ -676,22 +895,40 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     const slice = flows.slice(0, MAX);
 
     await withCancellable(`Fuuz: analyzing ${slice.length} flows…`, async signal => {
-      const cache: FlowFetchCache = {};
-      const graphs: FlowGraph[] = [];
-      for (const f of slice) {
-        if (signal?.aborted) return;
-        const g = await fetchFlowGraph(resourceService, tenant, f, cache, signal, false).catch(() => null);
-        if (g) graphs.push(g);
-      }
+      const fetched = await mapLimit(slice, CHECK_CONCURRENCY, async f => {
+        if (signal?.aborted) return null;
+        return fetchFlowGraph(resourceService, tenant, f, signal, false).catch(() => null);
+      });
+      const graphs: FlowGraph[] = fetched.filter((g): g is FlowGraph => g !== null);
       if (graphs.length === 0) { vscode.window.showWarningMessage("Fuuz: couldn't read flow nodes over MCP. Confirm the tenant connection."); return; }
       if (flows.length > MAX) fuuzLog(`checkAllFlows: analyzed first ${MAX} of ${flows.length} flows.`);
-      const report = analyzeFlowsCrossCutting(graphs);
+      const report = applyExcluded(analyzeFlowsCrossCutting(graphs, fuuzLog));
       ReportPanel.show(context, report);
       vscode.window.showInformationMessage(`Fuuz: analyzed ${graphs.length} flows for shared queries/scripts (${report.findings.length} suggestion(s)).`);
     });
   });
 
   // Audit the whole tenant: compliance on every model + flow → summary report.
+  // Choose which compliance validations the audit runs (opt in/out per rule).
+  register('fuuz.configureComplianceChecks', async () => {
+    const cat = catalogRules();
+    const excluded = excludedRuleSet();
+    const items = cat
+      .sort((a, b) => a.category.localeCompare(b.category) || a.title.localeCompare(b.title))
+      .map(r => ({ label: r.title, description: `${r.category} · ${r.id}`, id: r.id, picked: !excluded.has(r.id) }));
+    const picks = await vscode.window.showQuickPick(items, {
+      title: 'Compliance checks to include',
+      placeHolder: 'Checked = included in the audit; uncheck to exclude (e.g. color, descriptions)',
+      canPickMany: true, ignoreFocusOut: true,
+    });
+    if (!picks) return;
+    const include = new Set(picks.map(p => p.id));
+    const newExcluded = cat.filter(r => !include.has(r.id)).map(r => r.id);
+    const target = vscode.workspace.workspaceFolders?.length ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+    await vscode.workspace.getConfiguration('fuuz').update('compliance.excludedRules', newExcluded, target);
+    vscode.window.showInformationMessage(`Fuuz: ${include.size} compliance checks enabled, ${newExcluded.length} excluded.`);
+  });
+
   register('fuuz.checkTenant', async () => {
     const tenant = configManager.getActiveTenant();
     if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
@@ -713,39 +950,45 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     const MODEL_CAP = 150, FLOW_CAP = 100, SCREEN_CAP = 100;
 
     await withCancellable(`Fuuz: auditing ${tenant.name}…`, async signal => {
-      const reports: ComplianceReport[] = [];
-      const cache: FlowFetchCache = {};
-      const flowGraphs: FlowGraph[] = [];
       const ctx = await buildFlowContext(resourceService, tenant, signal);
 
-      for (const name of models.slice(0, MODEL_CAP)) {
-        if (signal?.aborted) return;
+      const modelReports = await mapLimit(models.slice(0, MODEL_CAP), CHECK_CONCURRENCY, async name => {
+        if (signal?.aborted) return null;
         const graph = await resourceService.getModelGraph(tenant, name, 'application', signal).catch(() => null);
-        if (!graph) continue;
+        if (!graph) return null;
         const info = ctx.models?.get(graph.name) ?? ctx.models?.get(name);
+        const meta = info?.deploymentId ? await fetchModelMeta(resourceService, tenant, info.deploymentId, signal) : {};
         const descriptor: DataModelDescriptor = {
           kind: 'dataModel', name: graph.name,
-          fields: graph.fields.map(f => ({ name: f.name, type: f.type })),
+          fields: graph.fields.map(f => ({ name: f.name, type: f.type, description: f.description })),
           relations: graph.relations.map(r => ({ field: r.field, target: r.target, many: r.many })),
           modelType: info?.type,
           recordCount: info?.recordCount,
+          dcc: meta.dcc,
+          triggers: meta.triggers,
         };
-        reports.push(runCompliance(descriptor));
-      }
-      for (const f of flows.slice(0, FLOW_CAP)) {
-        if (signal?.aborted) return;
-        const g = await fetchFlowGraph(resourceService, tenant, f, cache, signal, false).catch(() => null);
-        if (g) { flowGraphs.push(g); reports.push(runFlowGraphCompliance(g, ctx)); }
-      }
-      for (const s of screens.slice(0, SCREEN_CAP)) {
-        if (signal?.aborted) return;
+        return runCompliance(descriptor);
+      });
+      const flowGraphs = (await mapLimit(flows.slice(0, FLOW_CAP), CHECK_CONCURRENCY, async f => {
+        if (signal?.aborted) return null;
+        return fetchFlowGraph(resourceService, tenant, f, signal, false).catch(() => null);
+      })).filter((g): g is FlowGraph => g !== null);
+      const screenReports = await mapLimit(screens.slice(0, SCREEN_CAP), CHECK_CONCURRENCY, async s => {
+        if (signal?.aborted) return null;
         const m = await fetchScreenModel(resourceService, tenant, s, signal).catch(() => null);
-        if (m) reports.push(runScreenCompliance(m, ctx.models));
-      }
-      if (flowGraphs.length > 1) reports.push(analyzeFlowsCrossCutting(flowGraphs));
+        return m ? runScreenCompliance(m, ctx.models) : null;
+      });
+
+      const reports: ComplianceReport[] = [
+        ...modelReports.filter((r): r is ComplianceReport => r !== null),
+        ...flowGraphs.map(g => runFlowGraphCompliance(g, ctx)),
+        ...screenReports.filter((r): r is ComplianceReport => r !== null),
+      ];
+      if (flowGraphs.length > 1) reports.push(analyzeFlowsCrossCutting(flowGraphs, fuuzLog));
+      reports.push(await fetchRolesReport(resourceService, tenant, signal));
 
       if (reports.length === 0) { vscode.window.showWarningMessage('Fuuz: audit produced no results (check the tenant connection).'); return; }
-      const audit = runTenantAudit(tenant.name, reports);
+      const audit = runTenantAudit(tenant.name, reports.map(applyExcluded));
       ReportPanel.show(context, audit);
       if (models.length > MODEL_CAP || flows.length > FLOW_CAP || screens.length > SCREEN_CAP) {
         fuuzLog(`tenant audit: capped at ${MODEL_CAP} models / ${FLOW_CAP} flows / ${SCREEN_CAP} screens (tenant has ${models.length}/${flows.length}/${screens.length}).`);
@@ -764,11 +1007,10 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     if (!node?.id) { vscode.window.showWarningMessage('Run this on a flow node.'); return; }
     const flow = { id: node.id, name: node.name ?? 'Flow', type: node.type };
     await withCancellable(`Fuuz: building fix plan for ${flow.name}…`, async signal => {
-      const cache: FlowFetchCache = {};
-      const graph = await fetchFlowGraph(resourceService, tenant, flow, cache, signal);
+      const graph = await fetchFlowGraph(resourceService, tenant, flow, signal);
       if (!graph) { vscode.window.showWarningMessage("Fuuz: couldn't read this flow over MCP."); return; }
       const ctx = await buildFlowContext(resourceService, tenant, signal);
-      const report = runFlowGraphCompliance(graph, ctx);
+      const report = applyExcluded(runFlowGraphCompliance(graph, ctx));
       const md = buildFlowFixPlan(graph, report);
       await deliverFixPlan(tenant.name, flow.name, md);
     });
@@ -779,34 +1021,52 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     const tenant = configManager.getActiveTenant();
     if (!tenant) { vscode.window.showWarningMessage('Select an active Fuuz tenant first.'); return; }
     const snap = configManager.getCachedResources(tenant.id);
+    const modelNames: string[] = [];
     const flows: Array<{ id: string; name: string; type?: string }> = [];
     const screens: Array<{ id: string; name: string }> = [];
     for (const mg of snap?.mcp?.application ?? []) {
       for (const m of mg.modules ?? []) {
+        for (const dm of m.dataModels ?? []) if (dm.name) modelNames.push(dm.name);
         for (const f of m.flows ?? []) if (f.id) flows.push({ id: f.id, name: f.name, type: f.type });
         for (const s of m.screens ?? []) if (s.id) screens.push({ id: s.id, name: s.name });
       }
     }
-    if (flows.length === 0 && screens.length === 0) { vscode.window.showInformationMessage('Fuuz: nothing to audit (sync the tenant first).'); return; }
-    const FLOW_CAP = 100, SCREEN_CAP = 100;
+    if (modelNames.length === 0 && flows.length === 0 && screens.length === 0) { vscode.window.showInformationMessage('Fuuz: nothing to audit (sync the tenant first).'); return; }
+    const MODEL_CAP = 150, FLOW_CAP = 100, SCREEN_CAP = 100;
     await withCancellable(`Fuuz: building fix plan for ${tenant.name}…`, async signal => {
-      const cache: FlowFetchCache = {};
       const ctx = await buildFlowContext(resourceService, tenant, signal);
-      const flowInputs: FlowFixInput[] = [];
-      const graphs: FlowGraph[] = [];
-      for (const f of flows.slice(0, FLOW_CAP)) {
-        if (signal?.aborted) return;
-        const g = await fetchFlowGraph(resourceService, tenant, f, cache, signal, false).catch(() => null);
-        if (g) { graphs.push(g); flowInputs.push({ graph: g, report: runFlowGraphCompliance(g, ctx) }); }
-      }
-      const screenReports: ComplianceReport[] = [];
-      for (const s of screens.slice(0, SCREEN_CAP)) {
-        if (signal?.aborted) return;
+      const modelReports = (await mapLimit(modelNames.slice(0, MODEL_CAP), CHECK_CONCURRENCY, async name => {
+        if (signal?.aborted) return null;
+        const graph = await resourceService.getModelGraph(tenant, name, 'application', signal).catch(() => null);
+        if (!graph) return null;
+        const info = ctx.models?.get(graph.name) ?? ctx.models?.get(name);
+        const meta = info?.deploymentId ? await fetchModelMeta(resourceService, tenant, info.deploymentId, signal) : {};
+        return runCompliance({
+          kind: 'dataModel', name: graph.name,
+          fields: graph.fields.map(f => ({ name: f.name, type: f.type, description: f.description })),
+          relations: graph.relations.map(r => ({ field: r.field, target: r.target, many: r.many })),
+          modelType: info?.type, recordCount: info?.recordCount, dcc: meta.dcc, triggers: meta.triggers,
+        });
+      })).filter((r): r is ComplianceReport => r !== null);
+      const graphs = (await mapLimit(flows.slice(0, FLOW_CAP), CHECK_CONCURRENCY, async f => {
+        if (signal?.aborted) return null;
+        return fetchFlowGraph(resourceService, tenant, f, signal, false).catch(() => null);
+      })).filter((g): g is FlowGraph => g !== null);
+      const flowInputs: FlowFixInput[] = graphs.map(g => ({ graph: g, report: runFlowGraphCompliance(g, ctx) }));
+      const screenReports = (await mapLimit(screens.slice(0, SCREEN_CAP), CHECK_CONCURRENCY, async s => {
+        if (signal?.aborted) return null;
         const m = await fetchScreenModel(resourceService, tenant, s, signal).catch(() => null);
-        if (m) screenReports.push(runScreenCompliance(m, ctx.models));
-      }
-      const cross = graphs.length > 1 ? analyzeFlowsCrossCutting(graphs) : undefined;
-      const md = buildTenantFixPlan(tenant.name, { flows: flowInputs, cross, screens: screenReports });
+        return m ? runScreenCompliance(m, ctx.models) : null;
+      })).filter((r): r is ComplianceReport => r !== null);
+      const cross = graphs.length > 1 ? analyzeFlowsCrossCutting(graphs, fuuzLog) : undefined;
+      const roles = await fetchRolesReport(resourceService, tenant, signal);
+      const md = buildTenantFixPlan(tenant.name, {
+        flows: flowInputs.map(fi => ({ graph: fi.graph, report: applyExcluded(fi.report) })),
+        cross: cross ? applyExcluded(cross) : undefined,
+        screens: screenReports.map(applyExcluded),
+        models: modelReports.map(applyExcluded),
+        app: [applyExcluded(roles)],
+      });
       await deliverFixPlan(tenant.name, tenant.name, md);
     });
   });
@@ -913,29 +1173,6 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     }
   });
 
-  register('fuuz.createTool', async () => {
-    const enterprise = configManager.getActiveEnterprise();
-    const tenant = configManager.getActiveTenant();
-    if (!enterprise || !tenant) {
-      const pick = await vscode.window.showWarningMessage('Select an active Fuuz tenant first.', 'Select Tenant');
-      if (pick) await vscode.commands.executeCommand('fuuz.selectTenant');
-      return;
-    }
-    const snapshot = configManager.getCachedResources(tenant.id);
-    const serverName = snapshot?.mcp?.serverName || `Fuuz: ${enterprise.name} / ${tenant.name}`;
-    const prompt = buildCreateToolPrompt(enterprise.name, tenant.name, enterprise.environment, serverName);
-
-    try {
-      await vscode.commands.executeCommand('workbench.action.chat.open', { query: prompt, mode: 'agent' });
-    } catch {
-      try {
-        await vscode.commands.executeCommand('workbench.action.chat.open', prompt);
-      } catch {
-        await vscode.env.clipboard.writeText(prompt);
-        vscode.window.showInformationMessage('Fuuz: copied a "build a new tool" prompt to the clipboard — paste it into Copilot Chat (agent mode).');
-      }
-    }
-  });
 }
 
 /** Component type → the data model that holds its deployable versions. */
@@ -996,33 +1233,46 @@ async function pickVersionId(
 async function startQaRun(
   configManager: TenantConfigurationManager,
   tokenStore: TokenStore,
+  resourceService: TenantDataService,
+  secrets: vscode.SecretStorage,
   scope: RunScope
 ): Promise<void> {
   const enterprise = configManager.getActiveEnterprise();
-  if (!enterprise) {
+  const tenant = configManager.getActiveTenant();
+  if (!enterprise || !tenant) {
     const pick = await vscode.window.showWarningMessage('Select an active Fuuz tenant first.', 'Select Tenant');
     if (pick) await vscode.commands.executeCommand('fuuz.selectTenant');
     return;
   }
   const target = deriveTarget(enterprise.environment ?? '');
 
-  const personaRaw = await vscode.window.showInputBox({
-    title: `QA ${scope.name} — personas`,
-    prompt: 'Comma-separated personas you will log in as (e.g. Operator, Supervisor)',
-    placeHolder: 'Operator, Supervisor',
-    ignoreFocusOut: true,
-    validateInput: v => (v.trim() ? undefined : 'Enter at least one persona'),
-  });
-  if (!personaRaw) return;
-  const personas: Persona[] = personaRaw.split(',').map(s => s.trim()).filter(Boolean).map(name => ({ name }));
+  // Pick the role(s) to test from the tenant's Role model — one role per test,
+  // multiple roles run concurrently in their own sandboxed sessions.
+  const roles = await fetchTenantRoles(resourceService, tenant);
+  let selectedRoles: TenantRole[];
+  if (roles.length) {
+    const picks = await vscode.window.showQuickPick(
+      roles.map(r => ({ label: r.name, description: r.id, role: r })),
+      { title: `QA ${scope.name} — select role(s) to test`, placeHolder: 'One role per test; pick several to run concurrently (sandboxed)', canPickMany: true, ignoreFocusOut: true }
+    );
+    if (!picks || picks.length === 0) return;
+    selectedRoles = picks.map(p => p.role);
+  } else {
+    const raw = await vscode.window.showInputBox({
+      title: `QA ${scope.name} — role(s)`, prompt: 'No tenant roles found — enter role name(s), comma-separated', placeHolder: 'Operator, Supervisor', ignoreFocusOut: true,
+      validateInput: v => (v.trim() ? undefined : 'Enter at least one role'),
+    });
+    if (!raw) return;
+    selectedRoles = raw.split(',').map(s => s.trim()).filter(Boolean).map(n => ({ id: n, name: n }));
+  }
 
   // Authority: full autonomy (no per-action prompts) vs supervised/manual.
   const authPick = await vscode.window.showQuickPick(
     [
-      { label: '$(rocket) Autonomous — full authority', detail: 'Claude proceeds without asking after each persona logs in (recommended).', value: 'autonomous' as const },
+      { label: '$(rocket) Autonomous — full authority', detail: 'Claude proceeds without asking after login (recommended).', value: 'autonomous' as const },
       { label: '$(person) Manual — supervised', detail: 'Claude pauses to confirm before each major step.', value: 'manual' as const },
     ],
-    { title: 'How should Claude run this QA?', placeHolder: 'Autonomous runs end-to-end; you only log each persona in', ignoreFocusOut: true }
+    { title: 'How should Claude run this QA?', placeHolder: 'Autonomous runs end-to-end', ignoreFocusOut: true }
   );
   if (!authPick) return;
   const authority = authPick.value;
@@ -1041,28 +1291,51 @@ async function startQaRun(
     );
   }
 
-  // The Claude Code run needs a run directory on disk (config + artifacts),
-  // scoped to the active tenant so the QA Runs view can filter by tenant.
   const tenantDir = activeTenantQaDir(configManager);
   if (!tenantDir) {
     vscode.window.showWarningMessage('Fuuz: open a folder and select an active tenant to run QA with Claude Code.');
     return;
   }
-  const runId = `qa-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
-  const dir = vscode.Uri.joinPath(tenantDir, runId);
-  const runRel = vscode.workspace.asRelativePath(dir, false);
-  const plan = buildQaPlan({ runId, createdAt: new Date().toISOString(), scope, target, personas, destructiveAllowed, authority, runDir: runRel });
-  const brief = planToBrief(plan);
 
-  await vscode.workspace.fs.createDirectory(dir);
-  await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, 'plan.json'), Buffer.from(JSON.stringify(plan, null, 2), 'utf8'));
-  const briefUri = vscode.Uri.joinPath(dir, 'brief.md');
-  await vscode.workspace.fs.writeFile(briefUri, Buffer.from(brief, 'utf8'));
-  await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(briefUri), { preview: false });
+  const batchId = `qa-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
+  const { sessions, capped, note } = planRoleRun(tenant.id, batchId, selectedRoles);
+  if (capped && note) vscode.window.showWarningMessage(`Fuuz QA: ${note}.`);
+
+  // One sandboxed run per role (separate dir → separate Playwright profile/artifacts).
+  for (const session of sessions) {
+    const runId = sessions.length > 1 ? `${batchId}-${session.roleId.replace(/[^a-z0-9._-]+/gi, '-')}` : batchId;
+    const dir = vscode.Uri.joinPath(tenantDir, runId);
+    const runRel = vscode.workspace.asRelativePath(dir, false);
+    const personas: Persona[] = [{ name: session.roleName }];
+    const plan = buildQaPlan({ runId, createdAt: new Date().toISOString(), scope, target, personas, destructiveAllowed, authority, runDir: runRel });
+    await vscode.workspace.fs.createDirectory(dir);
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(dir, 'plan.json'), Buffer.from(JSON.stringify(plan, null, 2), 'utf8'));
+    const briefUri = vscode.Uri.joinPath(dir, 'brief.md');
+    await vscode.workspace.fs.writeFile(briefUri, Buffer.from(planToBrief(plan), 'utf8'));
+    if (sessions.length === 1) await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(briefUri), { preview: false });
+    // Pre-saved sandbox test user for this role, if configured.
+    const cred = await readQaTestUser(secrets, session.credentialKey);
+    await launchClaudeQa(configManager, tokenStore, dir, plan.target.url, { roleName: session.roleName, cred });
+  }
   await vscode.commands.executeCommand('fuuz.refreshQaRuns');
+  if (sessions.length > 1) vscode.window.showInformationMessage(`Fuuz QA: launched ${sessions.length} concurrent role sessions.`);
+}
 
-  // Launch the run in Claude Code (headed browser) — not VS Code Copilot.
-  await launchClaudeQa(configManager, tokenStore, dir, plan.target.url);
+/** Fetch the tenant's roles over MCP (system_query_model on `Role`). */
+async function fetchTenantRoles(resourceService: TenantDataService, tenant: import('./types').Tenant): Promise<TenantRole[]> {
+  try {
+    const res = await resourceService.queryModel(tenant, 'Role', ['id', 'name'], '{}', 'application');
+    return res?.raw ? rolesFromRecords(decodeTronPayload(res.raw)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Read a role's sandbox test-user credential (JSON {username,password}) from SecretStorage. */
+async function readQaTestUser(secrets: vscode.SecretStorage, key: string): Promise<{ username: string; password: string } | undefined> {
+  const raw = await secrets.get(key);
+  if (!raw) return undefined;
+  try { const o = JSON.parse(raw); return o?.username && o?.password ? o : undefined; } catch { return undefined; }
 }
 
 /**
@@ -1075,7 +1348,8 @@ async function launchClaudeQa(
   configManager: TenantConfigurationManager,
   tokenStore: TokenStore,
   runDir: vscode.Uri,
-  targetUrl: string
+  targetUrl: string,
+  opts?: { roleName?: string; cred?: { username: string; password: string } }
 ): Promise<void> {
   const enterprise = configManager.getActiveEnterprise();
   const tenant = configManager.getActiveTenant();
@@ -1106,11 +1380,14 @@ async function launchClaudeQa(
     targetUrl,
     fuuz,
     autonomous,
+    roleName: opts?.roleName,
+    testUser: opts?.cred ? { userEnvVar: 'FUUZ_QA_USER', passEnvVar: 'FUUZ_QA_PASS' } : undefined,
   });
   await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(runDir, 'mcp.qa.json'), Buffer.from(JSON.stringify(launch.mcpConfig, null, 2), 'utf8'));
 
   const env: Record<string, string> = {};
   if (token) env.FUUZ_QA_TOKEN = token;
+  if (opts?.cred) { env.FUUZ_QA_USER = opts.cred.username; env.FUUZ_QA_PASS = opts.cred.password; }
   const term = vscode.window.createTerminal({
     name: `Fuuz QA — ${runDir.path.split('/').pop()}`,
     cwd: workspace ? workspace.uri : runDir,
@@ -1308,10 +1585,19 @@ async function runQaInBrowser(configManager: TenantConfigurationManager, tokenSt
   await launchClaudeQa(configManager, tokenStore, runDir, targetUrl);
 }
 
-/** Per-analysis cache: the cross-referenced tenant context, built once. */
-interface FlowFetchCache {
-  context?: FlowAnalysisContext;
-}
+/**
+ * Memoized tenant context, keyed by tenant id with a short TTL. `buildFlowContext`
+ * is called once per compliance/fix-plan command, but several such commands run
+ * back-to-back (audit, then fix plan); the cache spares the two full-table index
+ * queries each time within the window. Only non-empty results are cached so a
+ * transient failure self-heals on the next call.
+ */
+const flowContextCache = new Map<string, { ctx: FlowAnalysisContext; at: number }>();
+const FLOW_CONTEXT_TTL_MS = 60_000;
+/** Max MCP fetches in flight for tenant-wide audit/fix-plan sweeps. */
+const CHECK_CONCURRENCY = 5;
+/** Page cap for the two full-table index scans (server max is 1000). */
+const FLOW_CONTEXT_QUERY_CAP = 1000;
 
 /**
  * Build the tenant facts the flow analyzers cross-reference — a data-model index
@@ -1325,15 +1611,28 @@ async function buildFlowContext(
   tenant: import('./types').Tenant,
   signal?: AbortSignal
 ): Promise<FlowAnalysisContext> {
+  const cached = flowContextCache.get(tenant.id);
+  if (cached && Date.now() - cached.at < FLOW_CONTEXT_TTL_MS) return cached.ctx;
+
   const ctx: FlowAnalysisContext = {};
   try {
-    const res = await resourceService.queryModel(tenant, 'DataModel', ['id', 'name', 'dataModelTypeId', 'estimatedRecordCount'], '{}', 'application', signal);
-    if (res?.raw) ctx.models = buildModelIndex(decodeTronPayload(res.raw));
+    const res = await resourceService.queryModel(tenant, 'DataModel', ['id', 'name', 'dataModelTypeId', 'estimatedRecordCount', 'currentDataModelDeploymentId'], '{}', 'application', signal, FLOW_CONTEXT_QUERY_CAP);
+    if (res?.raw) {
+      const rows = decodeTronPayload(res.raw);
+      if (rows.length >= FLOW_CONTEXT_QUERY_CAP) fuuzLog(`buildFlowContext: DataModel index capped at ${FLOW_CONTEXT_QUERY_CAP} records — cross-references beyond the cap degrade to a generic warning.`);
+      ctx.models = buildModelIndex(rows);
+    }
   } catch { /* no model index — query-scoping rule degrades to a generic warning */ }
   try {
-    const res = await resourceService.queryModel(tenant, 'SavedTransform', ['id', 'name', 'inputSchema', 'deprecated'], '{}', 'application', signal);
-    if (res?.raw) ctx.savedTransforms = buildSavedTransformIndex(decodeTronPayload(res.raw));
+    const res = await resourceService.queryModel(tenant, 'SavedTransform', ['id', 'name', 'inputSchema', 'deprecated'], '{}', 'application', signal, FLOW_CONTEXT_QUERY_CAP);
+    if (res?.raw) {
+      const rows = decodeTronPayload(res.raw);
+      if (rows.length >= FLOW_CONTEXT_QUERY_CAP) fuuzLog(`buildFlowContext: SavedTransform index capped at ${FLOW_CONTEXT_QUERY_CAP} records — payload-contract checks beyond the cap degrade to info.`);
+      ctx.savedTransforms = buildSavedTransformIndex(rows);
+    }
   } catch { /* no saved-transform index — payload-contract rule degrades to info */ }
+
+  if (ctx.models || ctx.savedTransforms) flowContextCache.set(tenant.id, { ctx, at: Date.now() });
   return ctx;
 }
 
@@ -1370,7 +1669,6 @@ async function fetchFlowGraph(
   resourceService: TenantDataService,
   tenant: import('./types').Tenant,
   flow: { id: string; name: string; type?: string },
-  _cache: FlowFetchCache,
   signal?: AbortSignal,
   withVersions = true
 ): Promise<FlowGraph | null> {
@@ -1384,6 +1682,39 @@ async function fetchFlowGraph(
 }
 
 /**
+ * Read a model's data-change-capture + trigger config from its deployment's
+ * `modelDefinition` (a JSON blob) — the source for the DCC/retention/index rules.
+ * Returns {} on failure so those rules simply don't fire.
+ */
+async function fetchModelMeta(
+  resourceService: TenantDataService,
+  tenant: import('./types').Tenant,
+  deploymentId: string,
+  signal?: AbortSignal
+): Promise<ModelMeta> {
+  const res = await resourceService.queryModel(tenant, 'DataModelDeployment', ['id', 'modelDefinition'], JSON.stringify({ id: { _eq: deploymentId } }), 'application', signal).catch(() => null);
+  if (!res?.raw) return {};
+  const rows = decodeTronPayload(res.raw);
+  return parseModelMeta((rows[0] as any)?.modelDefinition);
+}
+
+/** Query how many roles a tenant has and build an app-level compliance report. */
+async function fetchRolesReport(
+  resourceService: TenantDataService,
+  tenant: import('./types').Tenant,
+  signal?: AbortSignal
+): Promise<ComplianceReport> {
+  let count = 0;
+  try {
+    const res = await resourceService.queryModel(tenant, 'Role', ['id'], '{}', 'application', signal);
+    if (res?.raw) count = decodeTronPayload(res.raw).length;
+  } catch { /* leave 0 — surfaces as "no roles" */ }
+  const ok = count > 0;
+  const findings: Finding[] = ok ? [] : [{ ruleId: 'app-roles', severity: 'warn', message: 'No roles configured — every application should have at least one role', fix: 'Create at least one Role and assign access-control policy groups + a home screen.' }];
+  return { kind: 'flow', name: 'Application roles', score: ok ? 100 : 0, checks: 1, passed: ok ? 1 : 0, rules: [{ ruleId: 'app-roles', title: 'Application has roles configured', checks: 1, passed: ok ? 1 : 0, findings }], findings };
+}
+
+/**
  * Read a screen's elements (`ScreenElement`) over `system_query_model` and adapt
  * them to a ScreenModel for compliance analysis. System-tools only.
  */
@@ -1394,7 +1725,7 @@ async function fetchScreenModel(
   signal?: AbortSignal
 ) {
   const where = JSON.stringify({ screenId: { _eq: screen.id } });
-  const res = await resourceService.queryModel(tenant, 'ScreenElement', ['id', 'name', 'type', 'componentName', 'label', 'configuration'], where, 'application', signal).catch(() => null);
+  const res = await resourceService.queryModel(tenant, 'ScreenElement', ['id', 'name', 'type', 'componentName', 'label', 'description', 'configuration'], where, 'application', signal).catch(() => null);
   if (!res?.raw) return null;
   const rows = decodeTronPayload(res.raw);
   if (rows.length === 0) return null;
@@ -1491,25 +1822,6 @@ function registerErdCommands(
 }
 
 /** Prompt that kicks off a guided, agentic data-flow build via the Fuuz MCP server. */
-function buildCreateToolPrompt(enterpriseName: string, tenantName: string, environment: string | undefined, serverName: string): string {
-  return [
-    `I want to create a new Fuuz **tool**, which is implemented as a **data flow** in my Fuuz app and exposed to agents over MCP.`,
-    ``,
-    `Context:`,
-    `- Enterprise: ${enterpriseName}${environment ? ` (environment \`${environment}\`)` : ''}`,
-    `- Tenant: ${tenantName}`,
-    `- The Fuuz MCP server "${serverName}" is connected in this workspace. Use its tools.`,
-    ``,
-    `Please walk me through building this tool step by step. Specifically:`,
-    `1. Ask me what the tool should do, its inputs, and its outputs.`,
-    `2. Use the Fuuz MCP tools to gather the context you need. **Prefer the platform \`system_*\` tools** — \`system_list_models\` and \`system_query_model\` to find relevant data models and to read existing flows/screens (query \`DataFlow\`, \`DataFlowElement\`, \`Screen\`, \`ScreenElement\`), and \`system_list_model_fields\` / \`system_list_model_references\` for schemas and relationships. The \`data_flow_*\` tools are themselves user-built flows and may be unreliable or incomplete — don't depend on them.`,
-    `2. Propose a data-flow design (nodes, inputs, transforms, outputs) and confirm it with me before making changes.`,
-    `3. Create or update the data flow using \`system_data_flow_mutations\`, then summarize what was created and how to deploy/test it.`,
-    ``,
-    `Ask me clarifying questions first — don't make changes until I confirm the design.`,
-  ].join('\n');
-}
-
 async function updateContextFlags(configManager: TenantConfigurationManager) {
   await vscode.commands.executeCommand('setContext', 'fuuz.hasConfig', configManager.hasEnterprises());
   await vscode.commands.executeCommand('setContext', 'fuuz.tenantSelected', configManager.getActiveTenant() !== null);
@@ -1537,6 +1849,15 @@ interface ResourceCommandArg {
 }
 
 /** Narrow an unknown command arg to the tree's node shape. */
+/** Rule ids the user has excluded from compliance audits (fuuz.compliance.excludedRules). */
+function excludedRuleSet(): Set<string> {
+  return new Set(vscode.workspace.getConfiguration('fuuz').get<string[]>('compliance.excludedRules', []));
+}
+/** Drop user-excluded rules from a report before it's shown / audited / planned. */
+function applyExcluded(report: ComplianceReport): ComplianceReport {
+  return filterReport(report, excludedRuleSet());
+}
+
 function nodeArg(arg: unknown): ResourceCommandArg['node'] {
   return arg && typeof arg === 'object' ? (arg as ResourceCommandArg).node : undefined;
 }

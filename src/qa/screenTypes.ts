@@ -10,6 +10,7 @@ export interface ScreenElementNode {
   type: string;            // raw Fuuz type, e.g. 'ActionButton', 'TableColumn'
   componentName?: string;  // tab/component it lives in
   label?: string;
+  description?: string;
   /** A transform expression attached directly to this element, if any. */
   transform?: string;
   /** Data model this element binds to (Form/Table), if any. */

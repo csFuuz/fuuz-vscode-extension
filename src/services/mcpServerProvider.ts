@@ -2,22 +2,17 @@ import * as vscode from 'vscode';
 import { TenantConfigurationManager } from './tenantConfigurationManager';
 import { TokenStore } from './tokenStore';
 
-type FuuzServerDef = vscode.McpHttpServerDefinition | vscode.McpStdioServerDefinition;
-
 /**
  * Contributes Fuuz MCP servers to VS Code so the developer's AI copilot
  * (Copilot Chat / agent mode) can discover and call into each configured Fuuz
  * tenant over the Model Context Protocol.
  *
- * One server is published per tenant with a stored token. When a tenant has
- * **disabled tools**, it is registered via a local stdio **gating proxy**
- * (`proxy/mcp-proxy.js`) that strips disabled tools from `tools/list` and
- * rejects `tools/call` for them — so the deny-list is actually enforced, not
- * just advisory. Otherwise it registers directly as an HTTP server. The token
- * is supplied at provision time from SecretStorage; it is never written to
- * settings or `.vscode/mcp.json`.
+ * One server is published per tenant, registered directly as a streamable-HTTP
+ * server with the SecretStorage token supplied at provision time (never written
+ * to settings or `.vscode/mcp.json`). The former stdio gating proxy — which
+ * enforced a per-tenant disabled-tools deny-list — has been removed.
  */
-export class FuuzMcpServerProvider implements vscode.McpServerDefinitionProvider<FuuzServerDef> {
+export class FuuzMcpServerProvider implements vscode.McpServerDefinitionProvider<vscode.McpHttpServerDefinition> {
   /** Must match the id declared in package.json `mcpServerDefinitionProviders`. */
   static readonly PROVIDER_ID = 'fuuz';
 
@@ -26,8 +21,7 @@ export class FuuzMcpServerProvider implements vscode.McpServerDefinitionProvider
 
   constructor(
     private readonly configManager: TenantConfigurationManager,
-    private readonly tokenStore: TokenStore,
-    private readonly extensionUri: vscode.Uri
+    private readonly tokenStore: TokenStore
   ) {}
 
   /** Notify VS Code that the set of servers (or their auth) has changed. */
@@ -35,12 +29,8 @@ export class FuuzMcpServerProvider implements vscode.McpServerDefinitionProvider
     this._onDidChange.fire();
   }
 
-  private get proxyPath(): string {
-    return vscode.Uri.joinPath(this.extensionUri, 'proxy', 'mcp-proxy.js').fsPath;
-  }
-
-  async provideMcpServerDefinitions(): Promise<FuuzServerDef[]> {
-    const definitions: FuuzServerDef[] = [];
+  async provideMcpServerDefinitions(): Promise<vscode.McpHttpServerDefinition[]> {
+    const definitions: vscode.McpHttpServerDefinition[] = [];
     const activeEnterprise = this.configManager.getActiveEnterprise();
     const activeTenant = this.configManager.getActiveTenant();
 
@@ -56,27 +46,13 @@ export class FuuzMcpServerProvider implements vscode.McpServerDefinitionProvider
         }
 
         const isActive = activeEnterprise?.id === enterprise.id && activeTenant?.id === tenant.id;
-        const disabledTools = tenant.disabledTools ?? [];
         const label = `Fuuz: ${enterprise.name} › ${tenant.name}${isActive ? ' (active)' : ''}`;
-
-        if (disabledTools.length > 0) {
-          // Route through the local gating proxy so the deny-list is enforced.
-          definitions.push(
-            new vscode.McpStdioServerDefinition(label, process.execPath, [this.proxyPath], {
-              ELECTRON_RUN_AS_NODE: '1',
-              FUUZ_MCP_URL: serverUrl,
-              FUUZ_TOKEN: token,
-              FUUZ_DISABLED_TOOLS: disabledTools.join(','),
-            })
-          );
-        } else {
-          definitions.push(
-            new vscode.McpHttpServerDefinition(label, vscode.Uri.parse(serverUrl), {
-              'Authorization': `Bearer ${token}`,
-              'X-Fuuz-Tenant': tenant.id,
-            })
-          );
-        }
+        definitions.push(
+          new vscode.McpHttpServerDefinition(label, vscode.Uri.parse(serverUrl), {
+            'Authorization': `Bearer ${token}`,
+            'X-Fuuz-Tenant': tenant.id,
+          })
+        );
       }
     }
 
@@ -85,13 +61,9 @@ export class FuuzMcpServerProvider implements vscode.McpServerDefinitionProvider
 
   /**
    * Called lazily right before VS Code starts a server. Re-reads the token so a
-   * rotated credential is picked up without a window reload (HTTP servers only;
-   * stdio proxy servers receive the token via env at provision time).
+   * rotated credential is picked up without a window reload.
    */
-  async resolveMcpServerDefinition(server: FuuzServerDef): Promise<FuuzServerDef> {
-    if (!(server instanceof vscode.McpHttpServerDefinition)) {
-      return server;
-    }
+  async resolveMcpServerDefinition(server: vscode.McpHttpServerDefinition): Promise<vscode.McpHttpServerDefinition> {
     for (const enterprise of this.configManager.getEnterprises()) {
       for (const tenant of enterprise.tenants) {
         const label = `Fuuz: ${enterprise.name} › ${tenant.name}`;

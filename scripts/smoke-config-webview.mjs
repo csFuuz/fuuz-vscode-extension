@@ -53,10 +53,6 @@ const SAMPLE = {
         tenants: [{ id: 'tnt-prod', name: 'Production', hasToken: true, active: false, disabled: false }],
       },
     ],
-    activeTools: {
-      enterpriseId: 'ent-acme', tenantId: 'tnt-prod', tenantName: 'Production',
-      items: [{ name: 'system_query_model', description: 'Query a model', kind: 'system', enabled: true }],
-    },
   },
 };
 
@@ -84,11 +80,6 @@ async function main() {
 
   check('renders endpoints table', () => {
     assert.ok(document.body.textContent.includes('/orchestration/executeFlow'), 'flow endpoint missing');
-  });
-
-  check('renders agent tools card with the tool', () => {
-    assert.ok(document.body.textContent.includes('system_query_model'), 'tool name missing');
-    assert.ok(document.body.textContent.includes('Agent Tools — Production'), 'tools header missing');
   });
 
   // Interaction: add-by-key.
@@ -123,19 +114,6 @@ async function main() {
     assert.ok(posted.some(m => m.type === 'setActive' && m.tenantId === 'tnt-prod'), 'no setActive posted');
   });
 
-  // Interaction: toggle a tool off. Both a tenant row and the tool row carry a
-  // "Disable" button, so scope to the Agent Tools card.
-  check('tool Disable posts {setToolEnabled enabled:false}', () => {
-    const toolsCard = [...document.querySelectorAll('.card')].find(c => c.textContent.includes('Agent Tools'));
-    assert.ok(toolsCard, 'Agent Tools card not found');
-    const btn = [...toolsCard.querySelectorAll('button')].find(b => b.textContent.trim() === 'Disable');
-    assert.ok(btn, 'tool Disable button not found');
-    btn.click();
-    const msg = posted.find(m => m.type === 'setToolEnabled');
-    assert.ok(msg, 'no setToolEnabled posted');
-    assert.equal(msg.enabled, false);
-    assert.equal(msg.name, 'system_query_model');
-  });
 
   // Inbound probeResult renders badges.
   send({ type: 'probeResult', tenantId: 'tnt-prod', probes: [

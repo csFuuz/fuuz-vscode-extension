@@ -39,28 +39,53 @@ export function jaccard<T>(a: Set<T>, b: Set<T>): number {
 export interface SimMember<T> { id: string; text: string; meta: T; }
 export interface SimCluster<T> { members: SimMember<T>[]; similarity: number; }
 
+/** Default cap on members compared, bounding the O(n²) pairwise scan. */
+const DEFAULT_MAX_MEMBERS = 500;
+
+export interface ClusterOptions {
+  /** Max members compared before truncating (default 500). */
+  maxMembers?: number;
+  /** Called with a one-line note when truncation occurs (no silent drops). */
+  note?: (msg: string) => void;
+}
+
 /**
  * Group members whose pairwise shingle-Jaccard ≥ `threshold` (transitive).
  * Returns only clusters of 2+ members spanning 2+ distinct `groupOf` values
  * (e.g. 2+ flows), with the cluster's minimum observed pairwise similarity.
+ *
+ * The pairwise scan is O(n²); above `maxMembers` it compares only the first
+ * `maxMembers` and reports the truncation via `note` (callers log it).
  */
 export function clusterBySimilarity<T>(
   members: SimMember<T>[],
   groupOf: (m: SimMember<T>) => string,
   threshold = 0.8,
   k = 3,
+  opts: ClusterOptions = {},
 ): SimCluster<T>[] {
-  const n = members.length;
-  const shs = members.map(m => shingles(tokenize(m.text), k));
+  const maxMembers = opts.maxMembers ?? DEFAULT_MAX_MEMBERS;
+  let used = members;
+  if (members.length > maxMembers) {
+    used = members.slice(0, maxMembers);
+    opts.note?.(`similarity: compared the first ${maxMembers} of ${members.length} snippets to bound the O(n²) scan — ${members.length - maxMembers} not compared.`);
+  }
+
+  const n = used.length;
+  const shs = used.map(m => shingles(tokenize(m.text), k));
   const parent = Array.from({ length: n }, (_, i) => i);
   const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
   const union = (a: number, b: number) => { parent[find(a)] = find(b); };
-  const simBetween = new Map<string, number>();
 
+  // Cache every pairwise score so the per-cluster min-similarity pass below
+  // reuses them instead of recomputing Jaccard a second time.
+  const pairSim = new Map<number, number>();
+  const pairKey = (i: number, j: number) => i * n + j; // i < j
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       const s = jaccard(shs[i], shs[j]);
-      if (s >= threshold) { union(i, j); simBetween.set(`${find(i)}`, Math.min(simBetween.get(`${find(i)}`) ?? 1, s)); }
+      pairSim.set(pairKey(i, j), s);
+      if (s >= threshold) union(i, j);
     }
   }
 
@@ -74,12 +99,14 @@ export function clusterBySimilarity<T>(
   const clusters: SimCluster<T>[] = [];
   for (const idxs of groups.values()) {
     if (idxs.length < 2) continue;
-    const mem = idxs.map(i => members[i]);
+    const mem = idxs.map(i => used[i]);
     if (new Set(mem.map(groupOf)).size < 2) continue; // must span ≥2 flows
-    // min pairwise similarity within the cluster (lower bound on "how similar")
+    // min pairwise similarity within the cluster (lower bound on "how similar"),
+    // reusing the first-pass scores.
     let minSim = 1;
     for (let a = 0; a < idxs.length; a++) for (let b = a + 1; b < idxs.length; b++) {
-      minSim = Math.min(minSim, jaccard(shs[idxs[a]], shs[idxs[b]]));
+      const [lo, hi] = idxs[a] < idxs[b] ? [idxs[a], idxs[b]] : [idxs[b], idxs[a]];
+      minSim = Math.min(minSim, pairSim.get(pairKey(lo, hi)) ?? 1);
     }
     clusters.push({ members: mem, similarity: Math.round(minSim * 100) / 100 });
   }

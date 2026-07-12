@@ -25,7 +25,6 @@ export interface PlannedClaudeServer {
   envVar: string;
   /** Streamable-HTTP MCP endpoint for the tenant's enterprise. */
   url: string;
-  disabledTools: string[];
 }
 
 export interface ClaudeTargetResult {
@@ -69,13 +68,8 @@ export class ClaudeMcpWriter {
 
   constructor(
     private readonly configManager: TenantConfigurationManager,
-    private readonly tokenStore: TokenStore,
-    private readonly extensionUri: vscode.Uri
+    private readonly tokenStore: TokenStore
   ) {}
-
-  private get proxyPath(): string {
-    return vscode.Uri.joinPath(this.extensionUri, 'proxy', 'mcp-proxy.js').fsPath;
-  }
 
   /** The shell env var name a user exports to provide a tenant's token. */
   envVarFor(enterprise: Enterprise, tenant: Tenant): string {
@@ -102,7 +96,6 @@ export class ClaudeMcpWriter {
           serverKey: `fuuz-${enterprise.id}-${tenant.id}`,
           envVar: this.envVarFor(enterprise, tenant),
           url,
-          disabledTools: tenant.disabledTools ?? [],
         });
       }
     }
@@ -163,13 +156,9 @@ export class ClaudeMcpWriter {
       }
     }
 
-    // Resolve a node binary once, only if a stdio entry will actually be emitted.
-    const needsNode = targets.includes('desktop') || servers.some(s => s.disabledTools.length > 0);
-    const nodePath = needsNode ? await resolveNodePath() : 'node';
-
     const results: ClaudeTargetResult[] = [];
     for (const target of targets) {
-      results.push(await this.syncTarget(target, servers, tokens, nodePath));
+      results.push(await this.syncTarget(target, servers, tokens));
     }
     return results;
   }
@@ -177,8 +166,7 @@ export class ClaudeMcpWriter {
   private async syncTarget(
     target: ClaudeTarget,
     servers: PlannedClaudeServer[],
-    tokens: Map<string, string | undefined>,
-    nodePath: string
+    tokens: Map<string, string | undefined>
   ): Promise<ClaudeTargetResult> {
     const mode = this.tokenModeFor(target);
     const file = this.pathFor(target);
@@ -188,10 +176,8 @@ export class ClaudeMcpWriter {
       return { target, path: null, servers: [], missingToken: [], tokenMode: mode, skipped };
     }
 
-    // Claude Code understands HTTP + `${VAR}`, so it gets HTTP entries directly
-    // (the stdio proxy is only used to enforce a deny-list). Desktop can't talk
-    // HTTP from its file config, so it always runs the proxy.
-    const asHttp = target !== 'desktop';
+    // Every target now gets a direct streamable-HTTP entry (Bearer token or a
+    // `${VAR}` reference for project scope). The former stdio gating proxy is gone.
     const config = await readJsonFile(file);
     if (config === null) {
       return {
@@ -218,10 +204,7 @@ export class ClaudeMcpWriter {
           continue;
         }
       }
-      entries[s.serverKey] =
-        asHttp && s.disabledTools.length === 0
-          ? this.httpEntry(s, token)
-          : this.stdioEntry(s, nodePath, token);
+      entries[s.serverKey] = this.httpEntry(s, token);
       written.push(s.serverKey);
     }
 
@@ -259,19 +242,6 @@ export class ClaudeMcpWriter {
       url: s.url,
       headers: { Authorization: bearer, 'X-Fuuz-Tenant': s.tenantId },
     };
-  }
-
-  /** Stdio-proxy entry. Passes the token directly when embedding, else by indirection. */
-  private stdioEntry(s: PlannedClaudeServer, nodePath: string, token?: string): Record<string, any> {
-    const env: Record<string, string> = { FUUZ_MCP_URL: s.url };
-    if (token) {
-      env.FUUZ_TOKEN = token;
-    } else {
-      // The proxy reads the secret from this env var at launch (no secret on disk).
-      env.FUUZ_TOKEN_ENV = s.envVar;
-    }
-    if (s.disabledTools.length > 0) env.FUUZ_DISABLED_TOOLS = s.disabledTools.join(',');
-    return { command: nodePath, args: [this.proxyPath], env };
   }
 
   // --- Auto-registration -----------------------------------------------------
@@ -326,27 +296,3 @@ function isFuuzPresent(config: Record<string, any>): boolean {
   return !!servers && typeof servers === 'object' && Object.keys(servers).some(k => k.startsWith('fuuz-'));
 }
 
-/**
- * Find a real `node` binary to run the stdio proxy. GUI-launched clients (Claude
- * Desktop) don't inherit the shell PATH, so we bake an absolute path into the
- * config when we can find one, falling back to a bare `node`.
- */
-async function resolveNodePath(): Promise<string> {
-  const fromPath = (process.env.PATH || '').split(path.delimiter);
-  const extra =
-    process.platform === 'win32'
-      ? []
-      : ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', path.join(os.homedir(), '.local', 'bin')];
-  const binName = process.platform === 'win32' ? 'node.exe' : 'node';
-  for (const dir of [...fromPath, ...extra]) {
-    if (!dir) continue;
-    const candidate = path.join(dir, binName);
-    try {
-      await fs.access(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      /* keep looking */
-    }
-  }
-  return 'node';
-}

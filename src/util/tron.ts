@@ -50,7 +50,7 @@ export function decodeTronPayload(text: string): Record<string, Json>[] {
   const classes = readClassTable(body);
   const arrStart = body.indexOf('[', lastClassEnd(body));
   if (arrStart < 0) return [];
-  const { value } = readValue(body, arrStart, classes);
+  const { value } = readValue(body, arrStart, classes, 0);
   return Array.isArray(value) ? value.filter(isObject) : [];
 }
 
@@ -79,29 +79,40 @@ function lastClassEnd(body: string): number {
 }
 
 /**
+ * Guard against pathological / malicious deeply-nested payloads blowing the call
+ * stack. Past this nesting the decoder yields `null` for the over-deep value
+ * (callers degrade gracefully) rather than recursing further.
+ */
+const MAX_DEPTH = 200;
+
+/**
  * Read one TRON value starting at `i`. Dispatches on the first non-space char:
  * `[` array, `"` string, `A(` tuple (when A is a known class), else a bareword
  * scalar (number / null / true / false / unquoted token).
  * Returns the decoded value and the index just past it.
  */
-function readValue(s: string, i: number, classes: ClassTable): { value: Json; next: number } {
+function readValue(s: string, i: number, classes: ClassTable, depth: number): { value: Json; next: number } {
   i = skipWs(s, i);
+  // Past the depth cap, stop descending: yield null without consuming (the
+  // array/tuple loops still advance via their stray-separator fallback, so the
+  // overall scan terminates linearly).
+  if (depth > MAX_DEPTH) return { value: null, next: i };
   const ch = s[i];
-  if (ch === '[') return readArray(s, i, classes);
+  if (ch === '[') return readArray(s, i, classes, depth);
   if (ch === '"') return readString(s, i);
   if (ch === '{') return readJsonObject(s, i); // defensive: embedded JSON object
   // A class tuple: a known class letter immediately followed by `(`.
-  if (classes.has(ch) && s[i + 1] === '(') return readTuple(s, i, classes);
+  if (classes.has(ch) && s[i + 1] === '(') return readTuple(s, i, classes, depth);
   return readScalar(s, i);
 }
 
-function readArray(s: string, i: number, classes: ClassTable): { value: Json[]; next: number } {
+function readArray(s: string, i: number, classes: ClassTable, depth: number): { value: Json[]; next: number } {
   const out: Json[] = [];
   i++; // past '['
   i = skipWs(s, i);
   if (s[i] === ']') return { value: out, next: i + 1 };
   for (;;) {
-    const { value, next } = readValue(s, i, classes);
+    const { value, next } = readValue(s, i, classes, depth + 1);
     out.push(value);
     i = skipWs(s, next);
     if (s[i] === ',') { i = skipWs(s, i + 1); continue; }
@@ -111,7 +122,7 @@ function readArray(s: string, i: number, classes: ClassTable): { value: Json[]; 
   }
 }
 
-function readTuple(s: string, i: number, classes: ClassTable): { value: Record<string, Json>; next: number } {
+function readTuple(s: string, i: number, classes: ClassTable, depth: number): { value: Record<string, Json>; next: number } {
   const letter = s[i];
   const fields = classes.get(letter) ?? [];
   i += 2; // past 'A('
@@ -120,7 +131,7 @@ function readTuple(s: string, i: number, classes: ClassTable): { value: Record<s
   i = skipWs(s, i);
   if (s[i] === ')') return { value: obj, next: i + 1 };
   for (;;) {
-    const { value, next } = readValue(s, i, classes);
+    const { value, next } = readValue(s, i, classes, depth + 1);
     if (fields[k] !== undefined) obj[fields[k]] = value;
     k++;
     i = skipWs(s, next);

@@ -1,0 +1,240 @@
+/**
+ * Turn an autonomous QA run (for one role/persona) into a human-followed UAT
+ * (User Acceptance Test) document: a step-by-step wizard that always starts
+ * with logging in to Fuuz, lists data to enter and expected results, and ends
+ * with notes areas plus Tester/Approver sign-off blocks.
+ *
+ * Pure string building only (no `vscode`/Node imports) so it stays unit-testable
+ * under `node --test`. Renders both Word-compatible HTML (save as `.doc`) and
+ * Markdown.
+ */
+
+/** A single manual test step in the UAT wizard. */
+export interface UatStep {
+  title: string; // e.g. "Create a work order"
+  action: string; // what to do / where to click
+  data?: string; // data to enter (optional)
+  expected: string; // expected result
+  screenshot?: string; // optional image path or data URI
+}
+
+/** Raw inputs describing the run to document. */
+export interface UatInput {
+  appName: string;
+  tenantName: string;
+  roleName: string;
+  targetUrl: string;
+  generatedAt: string; // ISO string passed in (do NOT call Date.now())
+  steps: UatStep[];
+}
+
+/** The assembled, render-ready UAT document. */
+export interface UatModel {
+  title: string;
+  meta: { appName: string; tenantName: string; roleName: string; targetUrl: string; generatedAt: string };
+  prerequisites: string[]; // login is the first item
+  steps: UatStep[]; // step 1 is ALWAYS the prepended login step
+  signoff: { statement: string };
+}
+
+/** Build the login step that every UAT run begins with. */
+function loginStep(roleName: string, targetUrl: string): UatStep {
+  return {
+    title: 'Log in to Fuuz',
+    action: `Open ${targetUrl} and sign in as a ${roleName} user`,
+    expected: `The Fuuz home screen for the ${roleName} role loads`,
+  };
+}
+
+/**
+ * Assemble a {@link UatModel}: prepend the login step, build the prerequisites
+ * (login first) and a default sign-off statement.
+ */
+export function buildUatModel(input: UatInput): UatModel {
+  const login = loginStep(input.roleName, input.targetUrl);
+  return {
+    title: `UAT — ${input.appName} (${input.roleName})`,
+    meta: {
+      appName: input.appName,
+      tenantName: input.tenantName,
+      roleName: input.roleName,
+      targetUrl: input.targetUrl,
+      generatedAt: input.generatedAt,
+    },
+    prerequisites: [
+      `Log in to Fuuz at ${input.targetUrl} as a ${input.roleName} user`,
+      `A ${input.tenantName} tenant account with ${input.roleName} permissions`,
+      `Test data is available for the ${input.appName} app`,
+    ],
+    steps: [login, ...input.steps],
+    signoff: {
+      statement:
+        `I confirm that the steps above were executed against the ${input.appName} app ` +
+        `as a ${input.roleName} user and the results were reviewed and recorded.`,
+    },
+  };
+}
+
+/** Escape a string for safe inclusion in HTML text/attribute contexts. */
+function esc(s: string): string {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Escape a cell for a Markdown table (pipes and newlines break rows). */
+function mdCell(s: string | undefined): string {
+  return (s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+}
+
+/**
+ * Render the UAT model as Markdown: headings, a numbered step table
+ * (Step | Action | Data | Expected | Pass/Fail | Notes), a general notes area,
+ * and sign-off plus Tester/Approver signature blocks.
+ */
+export function renderUatMarkdown(m: UatModel): string {
+  const lines: string[] = [];
+  lines.push(`# ${m.title}\n`);
+  lines.push(`- **App:** ${m.meta.appName}`);
+  lines.push(`- **Tenant:** ${m.meta.tenantName}`);
+  lines.push(`- **Role:** ${m.meta.roleName}`);
+  lines.push(`- **Target:** ${m.meta.targetUrl}`);
+  lines.push(`- **Generated:** ${m.meta.generatedAt}\n`);
+
+  lines.push(`## Prerequisites\n`);
+  for (const p of m.prerequisites) lines.push(`- [ ] ${p}`);
+  lines.push('');
+
+  lines.push(`## Test Steps\n`);
+  lines.push(`| Step | Action | Data | Expected | Pass/Fail | Notes |`);
+  lines.push(`| ---: | --- | --- | --- | --- | --- |`);
+  m.steps.forEach((s, i) => {
+    const action = `**${mdCell(s.title)}** — ${mdCell(s.action)}`;
+    lines.push(
+      `| ${i + 1} | ${action} | ${mdCell(s.data)} | ${mdCell(s.expected)} |  |  |`,
+    );
+  });
+  lines.push('');
+
+  lines.push(`## Notes\n`);
+  lines.push(`_Record any observations, defects, or deviations here._\n`);
+  lines.push('```\n\n\n```\n');
+
+  lines.push(`## Sign-off\n`);
+  lines.push(`${m.signoff.statement}\n`);
+  lines.push(`**Tester**`);
+  lines.push(`- Name: ______________________`);
+  lines.push(`- Signature: ______________________`);
+  lines.push(`- Date: ______________________\n`);
+  lines.push(`**Approver**`);
+  lines.push(`- Name: ______________________`);
+  lines.push(`- Signature: ______________________`);
+  lines.push(`- Date: ______________________\n`);
+
+  lines.push(`_Generated by Fuuz QA — a manual UAT wizard derived from an autonomous run._`);
+  return lines.join('\n');
+}
+
+/** Render one signature block for the Word HTML document. */
+function signatureBlockHtml(role: string): string {
+  return (
+    `<div class="sig">` +
+    `<p class="sig-role">${esc(role)}</p>` +
+    `<p>Name: <span class="line"></span></p>` +
+    `<p>Signature: <span class="line"></span></p>` +
+    `<p>Date: <span class="line"></span></p>` +
+    `</div>`
+  );
+}
+
+/**
+ * Render the UAT model as a complete Word-openable HTML document (save as
+ * `.doc`): inline CSS, a step `<table>` with per-step Notes, embedded
+ * screenshots via `<img>` when present, a general notes area, and two signature
+ * blocks (Tester, Approver). All user-provided strings are HTML-escaped.
+ */
+export function renderUatWordHtml(m: UatModel): string {
+  const rows = m.steps
+    .map((s, i) => {
+      const shot = s.screenshot
+        ? `<br/><img src="${esc(s.screenshot)}" alt="Screenshot for step ${i + 1}" />`
+        : '';
+      return (
+        `<tr>` +
+        `<td class="num">${i + 1}</td>` +
+        `<td><strong>${esc(s.title)}</strong><br/>${esc(s.action)}${shot}</td>` +
+        `<td>${esc(s.data ?? '')}</td>` +
+        `<td>${esc(s.expected)}</td>` +
+        `<td class="pf"></td>` +
+        `<td class="notes"></td>` +
+        `</tr>`
+      );
+    })
+    .join('\n');
+
+  const prereqs = m.prerequisites.map(p => `<li>${esc(p)}</li>`).join('\n');
+
+  return `<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+<head>
+<meta charset="utf-8" />
+<title>${esc(m.title)}</title>
+<style>
+  body { font-family: "Calibri", "Segoe UI", Arial, sans-serif; color: #222; margin: 24px; }
+  h1 { font-size: 20pt; margin: 0 0 4px; }
+  h2 { font-size: 14pt; margin: 18px 0 6px; border-bottom: 1px solid #ccc; padding-bottom: 2px; }
+  .meta td { padding: 2px 12px 2px 0; font-size: 10pt; }
+  table.steps { border-collapse: collapse; width: 100%; font-size: 10pt; }
+  table.steps th, table.steps td { border: 1px solid #999; padding: 6px 8px; vertical-align: top; text-align: left; }
+  table.steps th { background: #f0f0f0; }
+  table.steps td.num { text-align: right; width: 36px; }
+  table.steps td.pf { width: 70px; }
+  table.steps td.notes { width: 160px; }
+  table.steps img { max-width: 320px; height: auto; margin-top: 4px; }
+  .notes-area { border: 1px solid #999; min-height: 120px; margin-top: 6px; }
+  .sig { margin: 10px 0 18px; }
+  .sig-role { font-weight: bold; margin: 0 0 4px; }
+  .sig .line { display: inline-block; border-bottom: 1px solid #333; min-width: 260px; }
+</style>
+</head>
+<body>
+<h1>${esc(m.title)}</h1>
+<table class="meta">
+  <tr><td><strong>App</strong></td><td>${esc(m.meta.appName)}</td></tr>
+  <tr><td><strong>Tenant</strong></td><td>${esc(m.meta.tenantName)}</td></tr>
+  <tr><td><strong>Role</strong></td><td>${esc(m.meta.roleName)}</td></tr>
+  <tr><td><strong>Target</strong></td><td>${esc(m.meta.targetUrl)}</td></tr>
+  <tr><td><strong>Generated</strong></td><td>${esc(m.meta.generatedAt)}</td></tr>
+</table>
+
+<h2>Prerequisites</h2>
+<ul>
+${prereqs}
+</ul>
+
+<h2>Test Steps</h2>
+<table class="steps">
+<thead>
+<tr><th>Step</th><th>Action</th><th>Data</th><th>Expected</th><th>Pass/Fail</th><th>Notes</th></tr>
+</thead>
+<tbody>
+${rows}
+</tbody>
+</table>
+
+<h2>Notes</h2>
+<p>Record any observations, defects, or deviations here.</p>
+<div class="notes-area"></div>
+
+<h2>Sign-off</h2>
+<p>${esc(m.signoff.statement)}</p>
+${signatureBlockHtml('Tester')}
+${signatureBlockHtml('Approver')}
+
+<p style="font-size:9pt;color:#666;">Generated by Fuuz QA — a manual UAT wizard derived from an autonomous run.</p>
+</body>
+</html>`;
+}

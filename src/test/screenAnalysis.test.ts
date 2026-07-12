@@ -84,8 +84,8 @@ test('missing version notes is an info finding; skipped when not provided', () =
 test('a clean small screen scores 100', () => {
   const rows = [
     { id: 't1', type: 'Table', name: 'Orders Table' },
-    { id: 'c1', type: 'TableColumn', name: 'Status', configuration: { label: 'Status' } },
-    { id: 'f1', type: 'TextInput', name: 'Search', configuration: { label: 'Search' } },
+    { id: 'c1', type: 'TableColumn', name: 'Status', description: 'order status', configuration: { label: 'Status' } },
+    { id: 'f1', type: 'TextInput', name: 'Search', description: 'free-text search', configuration: { label: 'Search' } },
     { id: 'b1', type: 'ActionButton', name: 'Refresh' },
   ];
   const rep = runScreenCompliance(buildScreenModel('Customer Orders', rows));
@@ -127,4 +127,20 @@ test('screen-perf-binding flags a large transactional binding without a filter',
     { id: 't1', type: 'Table', name: 'Statuses', configuration: { query: { model: 'OrderStatus' } } },
   ]);
   assert.equal(analyzeScreen(setup, models).find(r => r.ruleId === 'screen-perf-binding')!.findings.length, 0);
+});
+
+test('screen-column-descriptions + screen-input-descriptions flag missing descriptions', () => {
+  const rows = [
+    { id: 'c1', type: 'TableColumn', name: 'Status', description: 'order status', configuration: {} },
+    { id: 'c2', type: 'TableColumn', name: 'Qty', configuration: {} }, // no description
+    { id: 'i1', type: 'TextInput', name: 'Note', configuration: {} },   // no description
+    { id: 'i2', type: 'SelectInput', name: 'Type', description: 'pick a type', configuration: {} },
+  ];
+  const rules = analyzeScreen(buildScreenModel('S', rows));
+  const cols = rules.find(r => r.ruleId === 'screen-column-descriptions')!;
+  assert.equal(cols.checks, 2);
+  assert.ok(cols.findings.some(f => /Qty/.test(f.message)));
+  const inputs = rules.find(r => r.ruleId === 'screen-input-descriptions')!;
+  assert.equal(inputs.checks, 2);
+  assert.ok(inputs.findings.some(f => /Note/.test(f.message)));
 });

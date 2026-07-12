@@ -95,7 +95,8 @@ export async function collectFuuzLogs(
       onSkip?.(src.model, err);
     }
   }
-  // Surface errors first, then warnings, then info; newest within a level last.
+  // Surface errors first, then warnings, then info; oldest→newest within a level
+  // (ISO timestamps sort lexically; entries without one sort first).
   const order: Record<Severity, number> = { error: 0, warn: 1, info: 2 };
-  return out.sort((a, b) => order[a.severity] - order[b.severity]);
+  return out.sort((a, b) => order[a.severity] - order[b.severity] || (a.at ?? '').localeCompare(b.at ?? ''));
 }

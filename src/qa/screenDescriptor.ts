@@ -69,6 +69,7 @@ export function buildScreenModel(
       type,
       componentName: row?.componentName ?? undefined,
       label: row?.label ?? undefined,
+      description: nonEmpty(row?.description),
       transform: extractTransform(type, row?.configuration),
       model: boundModel(type, row?.configuration),
       hasFilter: queryHasFilter(type, row?.configuration),

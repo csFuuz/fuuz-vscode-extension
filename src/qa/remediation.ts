@@ -143,6 +143,10 @@ export interface TenantFixInput {
   /** Cross-flow report (shared scripts/queries). */
   cross?: ComplianceReport;
   screens?: ComplianceReport[];
+  /** Per-model data-model compliance reports. */
+  models?: ComplianceReport[];
+  /** App-level reports (e.g. roles configured). */
+  app?: ComplianceReport[];
 }
 
 /** Cross-flow extraction section (shared/similar scripts & queries). */
@@ -177,6 +181,26 @@ function screenSection(screens: ComplianceReport[] | undefined): string {
   return lines.join('\n');
 }
 
+/** App-level findings (e.g. no roles configured). */
+function appSection(app: ComplianceReport[] | undefined): string {
+  const findings = (app ?? []).flatMap(r => r.findings);
+  if (!findings.length) return '';
+  return ['## Application', '', ...findings.map(f => `- ${f.message}${f.fix ? ` — ${f.fix}` : ''}`)].join('\n');
+}
+
+/** Data-model fixes (setup fields, naming, references, DCC/retention, indexing, UoM). */
+function modelSection(models: ComplianceReport[] | undefined): string {
+  const flagged = (models ?? []).filter(m => m.findings.length).sort((a, b) => a.score - b.score);
+  if (!flagged.length) return '';
+  const lines = [`## Data models to fix (${flagged.length})`, '', 'Apply via `system_data_model_mutations` (and redeploy with `system_deploy_app_component_version`). DCC/retention/trigger settings live in the model definition’s `metadata.mfgx` (`dataChangeCapture`, `triggers`).', ''];
+  for (const m of flagged.slice(0, 40)) {
+    lines.push(`### ${m.name} (${m.score}%)`);
+    for (const f of m.findings.slice(0, 12)) lines.push(`- ${f.message}${f.fix ? ` — ${f.fix}` : ''}`);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 /** A whole-tenant fix plan: worst flows first, then cross-flow extraction + screens. */
 export function buildTenantFixPlan(tenantName: string, input: TenantFixInput): string {
   const flows = input.flows
@@ -184,6 +208,10 @@ export function buildTenantFixPlan(tenantName: string, input: TenantFixInput): s
     .sort((a, b) => a.report.score - b.report.score);
 
   const parts = [PREAMBLE(`tenant ${tenantName}`)];
+  const app = appSection(input.app);
+  if (app) parts.push(app);
+  const modelsMd = modelSection(input.models);
+  if (modelsMd) parts.push(modelsMd);
   const cross = crossSection(input.cross);
   if (cross) parts.push(cross);
 
@@ -199,6 +227,6 @@ export function buildTenantFixPlan(tenantName: string, input: TenantFixInput): s
   const screens = screenSection(input.screens);
   if (screens) parts.push(screens);
 
-  if (!cross && !flows.length && !screens) parts.push('_No actionable findings — tenant is compliant._');
+  if (!app && !modelsMd && !cross && !flows.length && !screens) parts.push('_No actionable findings — tenant is compliant._');
   return parts.join('\n\n') + '\n';
 }

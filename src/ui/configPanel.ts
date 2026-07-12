@@ -79,6 +79,9 @@ export class ConfigPanel {
       switch (msg.type) {
         case 'ready':
           await this.postState();
+          // A stored key is NOT a live connection — actively probe every tenant so
+          // the page shows the TRUE state, not a false "connected" from key presence.
+          void this.probeAllTenants();
           return;
 
         case 'addByToken': {
@@ -143,14 +146,6 @@ export class ConfigPanel {
           return;
         }
 
-        case 'setToolEnabled':
-          await configManager.setToolEnabled(msg.enterpriseId, msg.tenantId, msg.name, !!msg.enabled);
-          break;
-
-        case 'createTool':
-          await vscode.commands.executeCommand('fuuz.createTool');
-          return;
-
         case 'test': {
           const enterprise = configManager.getEnterprise(msg.enterpriseId);
           if (!enterprise) return;
@@ -175,6 +170,24 @@ export class ConfigPanel {
       const message = err instanceof Error ? err.message : String(err);
       void vscode.window.showErrorMessage(`Fuuz: ${message}`);
       await this.post({ type: 'error', message });
+    }
+  }
+
+  /** Probe every tenant that has a stored key and push the real connection state. */
+  private async probeAllTenants(): Promise<void> {
+    const { configManager, tokenStore, mcpClient } = this.deps;
+    for (const e of configManager.getEnterprises()) {
+      for (const t of e.tenants) {
+        const token = await tokenStore.getToken(e.id, t.id);
+        if (!token) { await this.post({ type: 'probeResult', tenantId: t.id, probes: [], message: 'No API key set' }); continue; }
+        try {
+          const probes = await mcpClient.probeEndpoints(configManager.endpointsFor(e), token);
+          this.applyHealth(e.id, t.id, probes);
+          await this.post({ type: 'probeResult', tenantId: t.id, probes });
+        } catch (err) {
+          await this.post({ type: 'probeResult', tenantId: t.id, probes: [], message: err instanceof Error ? err.message : String(err) });
+        }
+      }
     }
   }
 
@@ -210,26 +223,7 @@ export class ConfigPanel {
       }))
     );
 
-    let activeTools: PanelState['activeTools'];
-    if (activeEnt && activeTen) {
-      const snapshot = configManager.getCachedResources(activeTen.id);
-      const tools = snapshot?.mcp?.tools ?? [];
-      if (tools.length) {
-        activeTools = {
-          enterpriseId: activeEnt.id,
-          tenantId: activeTen.id,
-          tenantName: activeTen.name,
-          items: tools.map((t: any) => ({
-            name: t.name,
-            description: t.description,
-            kind: t.kind,
-            enabled: configManager.isToolEnabled(activeEnt.id, activeTen.id, t.name),
-          })),
-        };
-      }
-    }
-
-    return { enterprises, activeTools };
+    return { enterprises };
   }
 
   private async postState(): Promise<void> {

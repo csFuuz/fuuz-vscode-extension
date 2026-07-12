@@ -20,6 +20,27 @@ function run(ruleId: string, d: DataModelDescriptor): RuleResult {
   throw new Error(`no rule with id ${ruleId}`);
 }
 
+test('relation-fk-is-id: String FK backing a relation errors; ID passes', () => {
+  const bad = run('relation-fk-is-id', model({
+    name: 'FormulaHeader',
+    fields: [f('siteId', 'String'), f('statusCodeId', 'String')],
+    relations: [rel('site', 'Site'), rel('statusCode', 'StatusCode')],
+  }));
+  assert.equal(bad.checks, 2);
+  assert.equal(bad.passed, 0);
+  assert.ok(bad.findings.every(x => x.severity === 'error'));
+  assert.ok(bad.findings.some(x => /siteId/.test(x.message) && /ID/.test(x.message)));
+
+  const good = run('relation-fk-is-id', model({
+    name: 'FormulaHeader',
+    fields: [f('siteId', 'ID'), f('statusCodeId', 'ID!')],
+    relations: [rel('site', 'Site'), rel('statusCode', 'StatusCode')],
+  }));
+  assert.equal(good.checks, 2);
+  assert.equal(good.passed, 2);
+  assert.equal(good.findings.length, 0);
+});
+
 test('setup-required-fields: missing color/code/active warn; complete setup passes', () => {
   const bad = run('setup-required-fields', model({ name: 'OrderStatus', modelType: 'setup' }));
   assert.equal(bad.checks, 3);
@@ -127,4 +148,33 @@ test('type-unknown model: all 5 rules return 0 checks (do not affect score)', ()
     assert.equal(r.checks, 0, `${id} should run no checks`);
     assert.equal(r.findings.length, 0, `${id} should emit no findings`);
   }
+});
+
+test('dcc-history-disabled: history table with DCC enabled is flagged', () => {
+  const hist = model({ name: 'WorkunitStateHistory', modelType: 'transactional', dcc: { exposed: true, retentionDays: 120 } });
+  assert.ok(run('dcc-history-disabled', hist).findings.some(x => x.severity === 'warn'));
+  const off = model({ name: 'WorkunitStateHistory', modelType: 'transactional', dcc: { exposed: false } });
+  assert.equal(run('dcc-history-disabled', off).findings.length, 0);
+  const telemetry = model({ name: 'SignalTelemetry', dcc: { exposed: true } });
+  assert.ok(run('dcc-history-disabled', telemetry).findings.some(x => x.severity === 'info'));
+  const normal = model({ name: 'WorkOrder', modelType: 'transactional', dcc: { exposed: true, retentionDays: 120 } });
+  assert.equal(run('dcc-history-disabled', normal).checks, 0); // not a history/telemetry name
+});
+
+test('dcc-retention: long retention on a transactional table is flagged', () => {
+  const long = model({ name: 'WorkOrder', modelType: 'transactional', dcc: { exposed: true, retentionDays: 3650 } });
+  assert.ok(run('dcc-retention', long).findings.some(x => x.severity === 'info' && /long retention/.test(x.message)));
+  const ok = model({ name: 'WorkOrder', modelType: 'transactional', dcc: { exposed: true, retentionDays: 120 } });
+  assert.equal(run('dcc-retention', ok).findings.length, 0);
+  const master = model({ name: 'Product', modelType: 'master', dcc: { exposed: true, retentionDays: 5475 } });
+  assert.equal(run('dcc-retention', master).checks, 0); // master long retention is expected
+});
+
+test('high-frequency-index: large table without a trigger is flagged', () => {
+  const big = model({ name: 'OperationalSignal', modelType: 'transactional', recordCount: 37_000_000 });
+  assert.ok(run('high-frequency-index', big).findings.some(x => /high-frequency/.test(x.message)));
+  const bigWithTrigger = model({ name: 'OperationalSignal', recordCount: 37_000_000, triggers: { create: '$merge([$, { "id": $after.a & $after.b }])' } });
+  assert.equal(run('high-frequency-index', bigWithTrigger).findings.length, 0);
+  const small = model({ name: 'WorkOrder', recordCount: 67 });
+  assert.equal(run('high-frequency-index', small).checks, 0);
 });
