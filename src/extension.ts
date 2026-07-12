@@ -203,6 +203,7 @@ export async function activate(context: vscode.ExtensionContext) {
       mcpClient,
       connectionImporter,
       health,
+      mcpServerProvider,
       onChanged,
     });
 
@@ -289,11 +290,12 @@ interface CommandDeps {
   mcpClient: FuuzMcpClient;
   connectionImporter: ConnectionImporter;
   health: ConnectionHealth;
+  mcpServerProvider: FuuzMcpServerProvider;
   onChanged: () => void;
 }
 
 function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
-  const { configManager, resourceService, resourceTreeProvider, mcpJsonWriter, claudeMcpWriter, contextDocWriter, connectionImporter, tokenStore, mcpClient, health } = deps;
+  const { configManager, resourceService, resourceTreeProvider, mcpJsonWriter, claudeMcpWriter, contextDocWriter, connectionImporter, tokenStore, mcpClient, health, mcpServerProvider } = deps;
 
   const register = (id: string, fn: (...args: any[]) => any) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
@@ -420,6 +422,34 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
           vscode.window.showErrorMessage(`Failed to sync tenant data: ${errMsg(error)}`);
         }
       }
+    );
+  });
+
+  register('fuuz.restartMcp', async () => {
+    // Restart the Fuuz MCP connection(s) without reloading the window:
+    //  1. drop the extension's pooled MCP sessions (forces a fresh handshake),
+    //  2. fire the provider change event so VS Code tears down and re-resolves the
+    //     registered HTTP MCP servers for its own Copilot/agent mode,
+    //  3. re-sync the active tenant so the Resources tree reloads immediately.
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Restarting Fuuz MCP…', cancellable: false },
+      async () => {
+        mcpClient.clearSessions();
+        mcpServerProvider.refresh();
+        const tenant = configManager.getActiveTenant();
+        if (tenant) {
+          try {
+            resourceService.forgetUnauthorizedWarning(tenant.id);
+            await resourceService.syncTenantResources(tenant);
+            resourceTreeProvider.refresh();
+          } catch (error) {
+            fuuzLog(`restart MCP: resync failed for ${tenant.name}: ${errMsg(error)}`);
+          }
+        }
+      }
+    );
+    vscode.window.showInformationMessage(
+      'Fuuz MCP restarted. (VS Code Copilot picks this up immediately; restart Claude to reload its MCP servers.)'
     );
   });
 

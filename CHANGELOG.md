@@ -34,6 +34,17 @@ indefinitely — worst when switching between tenants to build across several.
   short grace window so genuinely MCP-less tenants aren't re-fetched every render.
 - Switching the active tenant now eagerly (re)loads its resources in the
   background, not just on startup — so a switched-to tenant shows live data.
+- **Empty `tools/list` no longer blanks the tree.** Some tenants return an empty or
+  filtered tool catalog while the platform `system_*` tools stay fully callable
+  (seen on sibling "site" tenants). Resource discovery no longer gates its
+  `system_query_model` / `system_list_models` calls on tool-catalog membership, so
+  those tenants load their resources instead of showing "connected but empty".
+
+### Added
+- **Restart Fuuz MCP** command (and Connections view button): drops pooled MCP
+  sessions, re-resolves the registered servers for VS Code's Copilot, and re-syncs
+  the active tenant — recovering a wedged/stale connection without reloading the
+  window. (Claude still needs its own restart to reload MCP servers.)
 
 ## 1.0.72
 

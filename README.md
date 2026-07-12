@@ -4,9 +4,10 @@
 > Actively developed and usable; features and APIs may change and you may hit rough edges.
 
 Connect VS Code to your Fuuz environments. Add a connection from an API key, and
-the extension registers the **Fuuz MCP server** so your AI copilot (Copilot Chat /
-agent mode) can work with your app, pulls in what the server exposes, and gives
-you runtime actions (execute flows, send webhooks).
+the extension registers the **Fuuz MCP server** so your AI coding assistant — the
+**Claude VS Code extension** or GitHub Copilot agent mode — can work with your app,
+pulls in what the server exposes, and gives you runtime actions (execute flows,
+send webhooks).
 
 > Some features depend on your **Fuuz subscription including MCP** — see
 > [Subscription & feature availability](#subscription--feature-availability).
@@ -17,8 +18,9 @@ you runtime actions (execute flows, send webhooks).
 - A **Fuuz API key** for the tenant you want to connect (the key encodes the
   tenant/enterprise/environment). Keys can expire or be deactivated — the
   extension flags a rejected key and offers **Replace API Key**.
-- For the AI features: the **GitHub Copilot** extension with **agent mode**, and a
-  Fuuz subscription that includes **MCP**.
+- For the AI features: an **MCP-capable AI assistant** — the **Claude** VS Code
+  extension or **GitHub Copilot** agent mode — and a Fuuz subscription that
+  includes **MCP**.
 
 ## Install (team)
 
@@ -127,10 +129,12 @@ tenant's Bearer token, stored in VS Code **SecretStorage** — never in
   remove connections from the config panel.
 - **Agent tool control** — the config panel's **Agent Tools** section lists the
   tools the MCP server exposes — **System** (`system_*` platform tools) and
-  **Custom (Data Flows)** (`data_flow_*` and any tenant flow) — and lets you
-  enable/disable each. Disabling re-registers the connection through a local
-  **gating proxy** that hides the tool from `tools/list` and blocks calls to it
-  (enforced, not advisory). Data models lazy-load their fields when expanded.
+  **Custom (Data Flows)** (`data_flow_*` and any tenant flow) — and lets you mark
+  tools disabled. Disabled tools are flagged in the **Resources** tree and left out
+  of the generated **App Context File**, steering your assistant away from them.
+  (Servers register as **direct streamable-HTTP**; the former stdio gating proxy
+  that hard-blocked calls has been removed.) Data models lazy-load their fields
+  when expanded.
 - **App context file** — **Generate App Context File** writes `.fuuz/AVAILABLE.md`,
   a snapshot of the active tenant that your AI coding assistant can read.
 
@@ -174,7 +178,7 @@ env vars, no copy/paste.
 | Target | Where it writes | Token |
 | --- | --- | --- |
 | Claude Code — user | `~/.claude.json` | **Embedded** (private home-dir config, mode 600, never committed) |
-| Claude Desktop | `claude_desktop_config.json` | **Embedded** via the bundled stdio proxy (`proxy/mcp-proxy.js`) |
+| Claude Desktop | `claude_desktop_config.json` | **Embedded** as a direct streamable-HTTP entry |
 
 The live token is embedded into these private files exactly the way every other
 MCP server stores its auth — and it's **refreshed automatically** when you
@@ -185,9 +189,8 @@ else in the files is preserved.
 > **Restart Claude** after a change — Claude loads MCP servers at startup, so a
 > running session won't see new/updated Fuuz servers until it's restarted.
 
-> **Claude Desktop** launched from Finder uses the absolute `node` path the
-> extension bakes into the config (it needs **Node 18+**). If no `node` is found
-> it falls back to a bare `node`, which must be on the launch environment's PATH.
+> Both Claude Code and Claude Desktop now receive a **direct streamable-HTTP**
+> entry (embedded Bearer token) — no local Node proxy process is involved.
 
 ### Project scope (shareable, opt-in)
 
@@ -230,6 +233,7 @@ read/query policy in that tenant.
 - **Fuuz: Configure Connections** — open the connection management panel
 - **Fuuz: Select Active Tenant** — quick-pick the active enterprise/tenant
 - **Fuuz: Sync Tenant Data** — refresh the Resources view for the active tenant
+- **Fuuz: Restart Fuuz MCP** — drop pooled MCP sessions, re-resolve the registered servers, and re-sync — recover a stale connection without reloading the window
 - **Fuuz: Show ERD** / **Show Module ERD** / **Show Application ERD** — interactive entity-relationship diagrams (drag nodes, expand fields, persisted layout)
 - **Fuuz: Find Data Model** — quick-pick search that opens a model's ERD
 - **Fuuz: Query Data Model** — read-only data query (pick fields + JSON filter)

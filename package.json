@@ -66,6 +66,12 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "fuuz.restartMcp",
+        "title": "Restart Fuuz MCP",
+        "category": "Fuuz",
+        "icon": "$(debug-restart)"
+      },
+      {
         "command": "fuuz.showErd",
         "title": "Show ERD",
         "category": "Fuuz",
@@ -437,6 +443,11 @@
           "command": "fuuz.syncTenantData",
           "when": "view == fuuzTenantSelector",
           "group": "navigation@3"
+        },
+        {
+          "command": "fuuz.restartMcp",
+          "when": "view == fuuzTenantSelector",
+          "group": "navigation@4"
         },
         {
           "command": "fuuz.openConfigPanel",
