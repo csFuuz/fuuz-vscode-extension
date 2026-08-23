@@ -97,12 +97,30 @@ a whole investigation:
 | surface | URL | what it gives you |
 | --- | --- | --- |
 | **Designer** | `/system/configuration/screens/<id>` | authoring; transforms DO run but the context is a shell (`components: []`, `screen: null`) |
-| **Screen runner** | `/system/configuration/screens/<versionId>/run` | the real screen **and** `Transform Debugging` console output |
+| **Screen runner** | `/system/configuration/screens/<versionId>/run` | the real screen, and the only surface that *can* emit `Transform Debugging` — see below |
 | **Deployed app** | the app route | the real screen with **zero** transform logging |
 
-So any console-based diagnosis must drive `/run`. That route also redirects a
-cold load to the app route and only sticks on a **second** navigation — a
-first-attempt "it redirected me" is expected, not a bug.
+So any console-based diagnosis must drive `/run`.
+
+**But the route is necessary and NOT sufficient.** Transform logging is gated on a
+session flag, and a plain browser does not set it — measured on platform
+`2026.8.0.959`:
+
+| what you do | `Transform Debugging` entries |
+| --- | --- |
+| open `/run` | **0** |
+| `sessionStorage.setItem('transformDebuggingEnabled','true')`, then reload | **13** |
+| open `/run?developerMode=true` | **13** (it sets the flag for you) |
+
+So "I'm on `/run` and the console is empty" is the expected result, not a broken
+screen. Set the flag — `?developerMode=true` is the cheapest way — **and reload**,
+because the flag is read as the app bundle evaluates. One more reason for an empty
+console: `executeTransform` returns a cached value *before* the logging line, so an
+unchanged transform logs nothing. A reload gives you the cold evaluation.
+
+*(An earlier build redirected a cold `/run` load to the app route, sticking only on
+a second navigation. That did not reproduce on `2026.8.0.959` — the first
+navigation stuck. If you do get redirected, just navigate again.)*
 
 ## References
 

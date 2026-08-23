@@ -31,14 +31,23 @@ Two specific traps worth asserting for by name:
 A deployed screen that renders is still only half the claim. Drive the thing the
 user will drive:
 
-1. Open `/system/configuration/screens/<versionId>/run` (twice — a cold load
-   redirects to the app route and only sticks on the second navigation).
+1. Open `/system/configuration/screens/<versionId>/run?developerMode=true`, then
+   **reload**. The `developerMode` param turns transform logging on; without it the
+   console stays empty on this route and the screen looks silent when it is fine.
+   (If the first navigation bounces you to the app route, navigate again — that was
+   an older build's behaviour and no longer reproduces.)
 2. Assert the shell rendered and it is not a login form.
 3. Read the row count / field values from the DOM, not from the query you *think*
    is behind them.
 4. Do the action — save the form, submit, filter — and read the record back.
 5. Collect the browser console. A GraphQL error returns **HTTP 200** with
    `errors[]` in the body, so a green network tab proves nothing.
+
+Measured on a real deployed screen, so you know what "healthy" looks like: the
+grid reported `Rows : 9` with five columns, all seven filter inputs resolved via
+`[data-data-path]`, and zero console errors and zero GraphQL `errors[]`. Note
+`[data-system-name]` is a **designer**-canvas handle and is absent at runtime —
+probe `[data-data-path]` and the grid's own classes instead.
 
 ## The Dev Console MCP, when there is one
 

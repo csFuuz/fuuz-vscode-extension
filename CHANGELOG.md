@@ -4,6 +4,24 @@ All notable changes to **Fuuz for VS Code**.
 
 ## 1.2.1
 
+### Fixed — the UI-validation skill said `/run` gives you transform logging. It does not.
+Measured against a deployed screen on platform `2026.8.0.959`: the screen-runner
+route on its own emits **0** `Transform Debugging` entries, and **13** once the
+session flag is set — `?developerMode=true` is the cheapest way, and it must be
+followed by a reload because the flag is read as the app bundle evaluates.
+
+Anyone following the old wording would have opened `/run`, seen an empty console,
+and concluded the screen was silent when it was working correctly. The skill and
+the wiki now carry the measurement, plus the other reason for an empty console: a
+result-cache hit returns *before* the logging call, so an unchanged transform logs
+nothing.
+
+Also corrected: the claim that a cold `/run` load redirects and only sticks on a
+second navigation. That was real on an earlier build and did **not** reproduce
+here — the first navigation stuck. It is now stated as a possibility to navigate
+through, not a rule. And `[data-system-name]` is a designer-canvas handle that is
+absent at runtime; probe `[data-data-path]` instead.
+
 ### Fixed — a compliance report can no longer claim 100% for something it never checked
 Found by running the shipped screen analyzer against real deployed screens on a
 live tenant. Five places computed `checks === 0 ? 100`, so an artifact **no rule
