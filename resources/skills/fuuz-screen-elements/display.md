@@ -1,24 +1,28 @@
 # Display Elements
 
-4 elements that display data visually — calendars, charts, timers, and event streams.
+4 elements that display data without being bound to a form — calendars, charts, timers, and
+event streams.
+
+The registry's **Display** category holds ten types. The other six — `DisplayText`, `Image`,
+`PDFViewer`, `ProgressBar`, `SVGInput` and `Visualization` — carry `requiresForm` and behave
+like inputs, so they are documented in [input.md](input.md).
+
+`CalendarInput` sits behind an `isSchedulingExcluded()` gate: its toolbox visibility is decided
+at runtime, and a tenant with scheduling disabled will not show it. The same gate covers
+`SchedulingConfiguration` in [data.md](data.md). Both resolved *open* on the surveyed tenant.
 
 ---
 
 ## Calendar
 
 **resolvedName:** `CalendarInput`
-**Flags:** `requiresForm: true`
+**Flags:** `registersSharedState`
 
-Full calendar component displaying events from saved data or dynamic queries. Supports day, week, month, and resource views.
+FullCalendar component. Renders either a **saved** `Calendar` record or a **dynamic** event set
+returned by a transform. `type` is seeded as `"calendar"`, but it is **not** form-bound — it
+declares none of the Basic set, no `field`, no `dataPath`, and no `label`.
 
 ### Sections
-
-**Basic**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `elementName` | text | Element name |
-| `label` | text | Calendar label |
 
 **Display**
 
@@ -26,77 +30,101 @@ Full calendar component displaying events from saved data or dynamic queries. Su
 |-------|------|-------------|
 | `padding` | slider | Inner padding (default: `8`) |
 | `width` | text | Width (default: `"100%"`) |
-| `height` | text | Height (default: `"600px"`) |
-| `visible` | switch | Visibility (default: `true`) |
-| `defaultView` | options | Initial view: `month`, `week`, `day`, `agenda`, `resource` |
-| `views` | json | Enabled views array |
+| `height` | text | Height (default: `"auto"`) |
+| `alignItems` | combobox | `start`, `end`, `center` (default: `"start"`) |
+| `visible` | transform | Visibility (default: `true`) |
+| `initialView` | options | View on load: `dayGridMonth` (Month), `timeGridWeek` (Week), `timeGridDay` (Day), `listWeek` (List) |
+| `useBasicTitleFormat` | checkbox | Use the basic title format (default: `false`) |
 
-**Data**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `dataSource` | options | `saved` (from form data) or `dynamic` (query) |
-| `query.api` | text | API target (dynamic mode) |
-| `query.model` | text | Model name (dynamic mode) |
-| `query.parameters` | transform | Query parameters (dynamic mode) |
-| `startField` | text | Data path for event start date/time |
-| `endField` | text | Data path for event end date/time |
-| `titleField` | text | Data path for event title |
-| `colorField` | text | Data path for event color |
-| `allDayField` | text | Data path for all-day flag |
-
-**Resource View**
+**Query**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `resourceModel` | text | Model for resources |
-| `resourceLabelField` | text | Resource display label field |
-| `resourceIdField` | text | Field linking events to resources |
+| `calendarSetting` | combobox | `Saved Calendar` or `Dynamic Calendar` |
+| `calendarId` | combobox | Which saved calendar to load; the option list is a `$query` against the tenant's `Calendar` model, so it shows only what has loaded |
+| `calendarEvents` | transform | Returns the event payload handed to the calendar (dynamic mode) |
+| `calendarParameters` | jsonata | Returns the parameter object handed to the calendar |
+| `calendarTransformRemote` | checkbox | Run the calendar transform server-side; better for complex transforms, worse for trivial ones |
+| `autoSave` | checkbox | Save events automatically when they are created, edited or deleted (default: `true`) |
+| `onChange` | jsonata | Transform run when the calendar changes |
+| `resourceView` | checkbox | Enable the resource lane view (default: `false`) |
+| `resources` | transform | Returns the resource list for that view |
 
-**Actions**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `onEventClick` | action | Action when clicking an event |
-| `onSlotSelect` | action | Action when selecting a time slot |
-| `onEventDrop` | action | Action when dragging an event to a new time |
-| `onEventResize` | action | Action when resizing an event |
+There are no `startField` / `endField` / `titleField`-style mappings: the shape of an event is
+fixed (`{ title, description, priority, timeZone, eventJson: { start, end, allDay, recurring, duration, rrule } }`)
+and you build it in `calendarEvents`.
 
 ### Exposed Functions
 
 | Function | Description |
 |----------|-------------|
-| `save()` | Save calendar changes |
-| `load()` | Reload calendar data |
-| `navigateToDate(date)` | Navigate to a specific date |
-| `setView(view)` | Switch calendar view |
+| `save(calendar?)` | Save the calendar; defaults to its current state. The argument, when given, is a full calendar object with a `calendarEvents` array |
 
 ### Exposed State
 
 | State | Description |
 |-------|-------------|
-| `data` | Current event data array |
-| `selectedEvent` | Currently selected event |
-| `currentDate` | Currently displayed date |
-| `currentView` | Currently active view |
+| `data` | The current calendar object |
+
+*Unverified rows: `label`, `defaultView`, `views`, `dataSource`, `query.*`, `startField`, `endField`, `titleField`, `colorField`, `allDayField`, `resourceModel`, `resourceLabelField`, `resourceIdField`, `onEventClick`, `onSlotSelect`, `onEventDrop`, `onEventResize`, and the `load()` / `navigateToDate()` / `setView()` functions — the registry declares none of them and no production screen stores them.*
 
 ---
 
 ## Chart
 
 **resolvedName:** `Chart`
-**Flags:** none
+**Flags:** `registersSharedState`
 
-Standalone chart/visualization component with its own data query. Supports auto-refresh on an interval.
+Standalone chart with its own configuration and refresh interval. Seven declared properties in
+total — the data and series live inside the composite `chart` editor, not in separate query
+fields.
 
 ### Sections
 
-**Basic**
+**Display**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `elementName` | text | Element name |
-| `label` | text | Chart label |
+| `padding` | slider | Inner padding (default: `8`) |
+| `width` | text | Width (default: `"400px"`) |
+| `height` | text | Height (default: `"300px"`) |
+| `allowFullscreen` | checkbox | Allow the chart to expand to fullscreen (default: `true`) |
+| `enableBackground` | checkbox | Draw the background card; off makes it transparent (default: `true`) |
+
+**Chart**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `chart` | chart | The whole chart configuration — type, series, axes, legend, colors and its data query (default: `{}`) |
+| `autoRefreshDuration` | duration | How often to reload; unset means load once on page load. **Minimum one minute** (default: `""`) |
+
+`chart` and `autoRefreshDuration` are the registry's only uses of the `chart` and `duration`
+field types.
+
+### Exposed Functions
+
+| Function | Description |
+|----------|-------------|
+| `loadData()` | Reload the chart data |
+| `search()` | Alias of `loadData()` — takes no argument and does not filter |
+
+### Exposed State
+
+The bundle declares no state keys for `Chart`.
+
+*Unverified rows: `elementName`-adjacent `label`, `visible`, `background`, `chartConfig`, `query.*`, `autoRefresh`, `refreshInterval`, `onDataPointClick`, and the `data` / `loading` state — the real names are `chart` and `autoRefreshDuration`.*
+
+---
+
+## Timer
+
+**resolvedName:** `Timer`
+**Flags:** `registersSharedState`
+
+Countdown or count-up timer. Either count a duration, or count between two date/times — the
+`useDateFields` switch chooses which pair of transforms is read.
+
+### Sections
 
 **Display**
 
@@ -104,105 +132,30 @@ Standalone chart/visualization component with its own data query. Supports auto-
 |-------|------|-------------|
 | `padding` | slider | Inner padding (default: `8`) |
 | `width` | text | Width (default: `"100%"`) |
-| `height` | text | Height (default: `"400px"`) |
-| `visible` | switch | Visibility (default: `true`) |
-| `enableBackground` | switch | Enable background color |
-| `background` | color | Background color |
-
-**Chart Configuration**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `chartConfig` | chart | Full chart configuration (type, series, axes, legend, colors, etc.) |
-
-**Data**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `query.api` | text | API target |
-| `query.model` | text | Model to query |
-| `query.autoLoad` | switch | Auto-load (default: `true`) |
-| `query.parameters` | transform | Query parameters |
-| `query.filterPredicate` | transform | Filter predicate |
-| `query.fields` | json | Query fields |
-| `query.query` | text | Raw GraphQL query override |
-
-**Auto-Refresh**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `autoRefresh` | switch | Enable auto-refresh (default: `false`) |
-| `refreshInterval` | integer | Refresh interval in seconds |
-
-**Actions**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `onDataPointClick` | action | Action when clicking a data point |
-
-### Exposed Functions
-
-| Function | Description |
-|----------|-------------|
-| `loadData()` | Reload chart data |
-| `search(term)` | Filter chart data |
-
-### Exposed State
-
-| State | Description |
-|-------|-------------|
-| `data` | Current chart data |
-| `loading` | Whether chart is loading |
-
----
-
-## Timer
-
-**resolvedName:** `Timer`
-**Flags:** none
-
-Countdown or count-up timer. Can count down to a target date, count up from a start date, or count a fixed duration.
-
-### Sections
-
-**Basic**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `elementName` | text | Element name |
-| `label` | text | Timer label |
-
-**Display**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `padding` | slider | Inner padding (default: `8`) |
-| `width` | text | Width (default: `"auto"`) |
 | `height` | text | Height (default: `"auto"`) |
-| `visible` | switch | Visibility (default: `true`) |
-| `fontSize` | text | Display font size |
+| `formatString` | text | Display format for the value |
+| `align` | options | Horizontal alignment: `left`, `center`, `right` (default: `"left"`) |
+| `variant` | options | Font size as a typography scale name: `h1`–`h6`, `subtitle1`, `subtitle2`, `body1`, `body2`, `button`, … |
 | `color` | color | Text color |
-| `expiredColor` | color | Text color when expired |
-| `flashOnExpired` | switch | Flash animation on expiry (default: `false`) |
+| `showProgressBar` | switch | Show a progress bar of elapsed time (default: `false`) |
 
 **Configuration**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `mode` | options | Timer mode: `countUp`, `countDown` |
-| `sourceType` | options | Time source: `dateField`, `duration` |
-| `startField` | text | Data path for start date (dateField mode) |
-| `endField` | text | Data path for end/target date (dateField mode) |
-| `duration` | transform | Fixed duration value (duration mode) |
-| `autoStart` | switch | Start timer automatically (default: `true`) |
-| `format` | text | Display format (e.g., `"HH:mm:ss"`) |
+| `useDateFields` | switch | Count between two date/times rather than for a fixed duration (default: `false`) |
+| `durationTransform` | jsonata | The duration to run for — a number of seconds or a moment duration string |
+| `startDateTimeTransform` | jsonata | Start point, when `useDateFields` is on |
+| `endDateTimeTransform` | jsonata | End point, when `useDateFields` is on |
 
-**Actions**
+**Behavior**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `onExpired` | action | Action when timer reaches zero (count down) |
-| `onTick` | action | Action on each tick |
+| `countUpMode` | switch | Count up from zero rather than down to it (default: `false`) |
+| `autoStart` | switch | Start counting on page load (default: `true`) |
+| `flashWhenExpired` | switch | Flash the value three times on expiry (default: `true`) |
+| `onTimerExpiredTransform` | jsonata | Transform run when the timer expires |
 
 ### Exposed Functions
 
@@ -210,25 +163,30 @@ Countdown or count-up timer. Can count down to a target date, count up from a st
 |----------|-------------|
 | `start()` | Start the timer |
 | `pause()` | Pause the timer |
-| `reset()` | Reset the timer |
+| `reset()` | Reset to the initial state |
+| `restart()` | Reset and start |
 
 ### Exposed State
 
 | State | Description |
 |-------|-------------|
-| `expired` | Whether the timer has expired |
-| `seconds` | Current elapsed/remaining seconds |
-| `totalSeconds` | Total duration in seconds |
-| `running` | Whether the timer is running |
+| `expired` | True once the timer has reached its target |
+| `seconds` | Seconds remaining (or elapsed in count-up mode); **`null` while flashing on expiry** |
+| `totalSeconds` | The full configured duration in seconds |
+
+There is no `running` state key — read `expired` and drive the rest from your own state.
+
+*Unverified rows: `label`, `visible`, `fontSize`, `expiredColor`, `flashOnExpired`, `mode`, `sourceType`, `startField`, `endField`, `duration`, `format`, `onExpired`, `onTick`, and the `running` state. The real names are `variant`, `flashWhenExpired`, `countUpMode`, `useDateFields`, `durationTransform`, `formatString` and `onTimerExpiredTransform`.*
 
 ---
 
 ## Event Console
 
 **resolvedName:** `EventConsoleAdapter`
-**Flags:** none
+**Flags:** `registersSharedState`
 
-Real-time event stream display. Subscribes to messaging topics and displays events as they arrive.
+Real-time event stream display, bound to one event **binding key**. Six declared properties;
+everything about message handling happens in the console itself, not in configuration.
 
 ### Sections
 
@@ -236,45 +194,28 @@ Real-time event stream display. Subscribes to messaging topics and displays even
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `elementName` | text | Element name |
-| `label` | text | Console label |
+| `label` | text | Console label (default: `"Event Console"`) |
+| `bindingKey` | transform | The binding key for the event data subscription |
+| `subscribeOnMount` | checkbox | Subscribe when the screen loads (default: **`false`**) |
 
 **Display**
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `padding` | slider | Inner padding (default: `8`) |
-| `width` | text | Width (default: `"100%"`) |
-| `height` | text | Height (default: `"400px"`) |
-| `visible` | switch | Visibility (default: `true`) |
-
-**Subscription**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `bindingKey` | text | Message topic binding key pattern |
-| `subscribeOnMount` | switch | Auto-subscribe when mounted (default: `true`) |
-| `filterTransform` | transform | Filter incoming messages |
-| `messageTransform` | transform | Transform messages before display |
-| `maxMessages` | integer | Maximum messages to display |
-
-**Actions**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `onMessage` | action | Action on each received message |
+| `width` | text | Width (default: `"500px"`) |
+| `height` | text | Height (default: `"650px"`) |
 
 ### Exposed Functions
 
 | Function | Description |
 |----------|-------------|
-| `subscribe()` | Start or restart the subscription |
-| `unsubscribe()` | Stop the subscription |
-| `clear()` | Clear displayed messages |
+| `subscribe(bindingKey)` | Subscribe the console to an event binding key. The argument is **required** — there is no zero-argument re-subscribe |
+
+There is no declared `unsubscribe()` or `clear()`.
 
 ### Exposed State
 
-| State | Description |
-|-------|-------------|
-| `messages` | Array of received messages |
-| `connected` | Whether the subscription is active |
+The bundle declares no state keys for `EventConsoleAdapter`.
+
+*Unverified rows: `visible`, `filterTransform`, `messageTransform`, `maxMessages`, `onMessage`, the `unsubscribe()` / `clear()` functions and the `messages` / `connected` state. Note also that `subscribeOnMount` defaults to `false`, not `true`.*

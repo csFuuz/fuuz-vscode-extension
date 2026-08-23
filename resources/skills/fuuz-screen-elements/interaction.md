@@ -1,15 +1,31 @@
 # Interaction Elements
 
-10 elements for triggering actions, flows, and operations.
+10 toolbox entries in the registry's **Buttons** category — but only **four element types**.
+`AddButton`, `EditButton`, `SaveButton`, `DeleteButton`, `PrintButton` and `SearchButton` are
+toolbox presets, not types: every one of them persists as `type: "ActionButton"`.
+
+| Toolbox entry | Stored `type` | `isButton` | Accepted by a Button Group |
+|---|---|---|---|
+| Action | `ActionButton` | yes | yes |
+| Flow | `FlowButton` | yes | yes |
+| Menu | `MenuButton` | yes | yes |
+| Split | `SplitButton` | **no** | **no** |
+| Create / Edit / Save / Delete / Print / Search | `ActionButton` | yes | yes |
+
+**`SplitButton` sets no flags at all.** `ButtonsGroup` gates `canMoveIn` on `isButton`, so a
+Split Button cannot be dropped into a Button Group — confirmed against a measured 900×400 group,
+twice, once into an empty group and once after a real button had populated it. No node was
+created, and **none of the group's declared rejection messages was rendered**. The drop simply
+did nothing.
 
 ---
 
 ## Flow Button
 
 **resolvedName:** `FlowButton`
-**Flags:** `isButton`
+**Flags:** `isButton`, `registersSharedState`
 
-Executes a data flow when clicked. Configure the flow ID and input parameters.
+Executes one data flow when clicked.
 
 ### Sections
 
@@ -17,53 +33,58 @@ Executes a data flow when clicked. Configure the flow ID and input parameters.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `elementName` | text | Element name |
-| `label` | text | Button label |
-| `icon` | icon | Button icon |
-| `variant` | options | Button variant (filled, outline, light, subtle, default) |
-| `color` | color | Button color |
-| `size` | options | Button size (xs, sm, md, lg, xl) |
+| `title` | text | Tooltip shown on hover |
+| `useIconButton` | checkbox | Render as an icon button rather than a labelled button (default: `false`) |
+| `text` | transform | Button text — used **instead of** the icon |
+| `buttonColor` | combobox | `primary`, `secondary`, `error`, `red`, `green`, … (default: `"primary"`) |
+| `icon` | transform | Icon descriptor: `{ icon, variant, size, color }` |
 
 **Display**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `padding` | slider | Inner padding (default: `0`) |
-| `width` | text | Width (default: `"auto"`) |
-| `visible` | switch | Visibility (default: `true`) |
-| `fullWidth` | switch | Full-width button (default: `false`) |
+| `margin` | slider | Outer margin (default: `6`) |
+| `width` | text | Width (default: `"76px"`) |
+| `height` | text | Height (default: `"48px"`) |
 
 **Flow**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `flowId` | text | Data flow ID to execute |
-| `flowInput` | transform | Input data for the flow |
-| `confirmMessage` | text | Confirmation dialog message (if set, prompts before executing) |
+| `dataFlowId` | combobox | The data flow to execute; the option list is queried from the tenant |
+| `payload` | transform | Payload the flow starts with (default: `{}`) |
 
-**Behavior**
+**Advanced**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `disabled` | transform | Disabled state |
-| `loading` | switch | Show loading spinner while executing |
-| `onSuccess` | action | Action after successful flow execution |
-| `onError` | action | Action on flow error |
+| `disabled` | transform | Disabled state (default: `false`) |
+| `hidden` | transform | Hide the button (default: `false`) |
+| `customButtonColor` | transform | Custom color, overriding `buttonColor` |
+| `customIconColor` | transform | Custom icon color, overriding the icon's own |
+| `customIconSize` | slider | Icon size in px |
+| `customTextSize` | slider | Text size in px |
 
 ### Exposed Functions
 
 | Function | Description |
 |----------|-------------|
-| `execute()` | Trigger the flow programmatically |
+| `execute()` | Run the button's flow |
+
+**Only a FlowButton can invoke a Screen-type flow.** Action steps and remote transforms reach
+Integration flows only — see `fuuz-data-flow`.
+
+*Unverified rows: `label`, `variant`, `color`, `size`, `padding`, `visible`, `fullWidth`, `flowId`, `flowInput`, `confirmMessage`, `loading`, `onSuccess`, `onError`. The real names are `text`, `buttonColor`, `hidden`, `dataFlowId` and `payload`; there is no confirmation or success/error hook on this element.*
 
 ---
 
 ## Action Button
 
 **resolvedName:** `ActionButton`
-**Flags:** `isButton`
+**Flags:** `isButton`, `registersSharedState`
 
-Executes an array of action steps when clicked. Actions can include navigation, API calls, setting context, notifications, etc.
+Runs an array of action steps when clicked. 1,221 production instances across four tenants —
+the most-used interaction element, and the target every button preset resolves to.
 
 ### Sections
 
@@ -71,49 +92,56 @@ Executes an array of action steps when clicked. Actions can include navigation, 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `elementName` | text | Element name |
-| `label` | text | Button label |
-| `icon` | icon | Button icon |
-| `variant` | options | Button variant |
-| `color` | color | Button color |
-| `size` | options | Button size |
+| `title` | text | Tooltip shown on hover |
+| `useIconButton` | checkbox | Render as an icon button (default: `false`) |
+| `disableHover` | checkbox | Remove the icon button's hover effect (default: `false`) |
+| `disableRipple` | checkbox | Remove the icon button's ripple effect (default: `false`) |
+| `text` | transform | Button text — used **instead of** the icon |
+| `buttonColor` | combobox | `primary`, `secondary`, `error`, `red`, `green`, … (default: `"primary"`) |
+| `icon` | transform | Icon descriptor: `{ icon, variant, size, color }` |
 
 **Display**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `padding` | slider | Inner padding (default: `0`) |
-| `width` | text | Width (default: `"auto"`) |
-| `visible` | switch | Visibility (default: `true`) |
-| `fullWidth` | switch | Full-width button |
+| `margin` | slider | Outer margin (default: `6`) |
+| `width` | text | Width (default: `"76px"`) |
+| `height` | text | Height (default: `"48px"`) |
 
-**Actions**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `actions` | action | Array of action steps to execute |
-| `confirmMessage` | text | Confirmation dialog message |
-
-**Behavior**
+**Action**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `disabled` | transform | Disabled state |
+| `action` | action | The array of action steps to run on click (default: `[]`) — **singular**, and the registry's only `action` field type |
+
+**Advanced**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `disabled` | transform | Disabled state (default: `false`) |
+| `hidden` | transform | Hide the button (default: `false`) |
+| `customButtonColor` | transform | Custom color, overriding `buttonColor` |
+| `customIconColor` | transform | Custom icon color |
+| `customIconSize` | slider | Icon size in px |
+| `customTextSize` | slider | Text size in px |
 
 ### Exposed Functions
 
 | Function | Description |
 |----------|-------------|
-| `execute()` | Trigger the actions programmatically |
+| `execute(payload?)` | Fire the action steps and return immediately |
+| `executeAsync(payload?)` | Fire the action steps and await their completion |
+
+*Unverified rows: `label`, `variant`, `color`, `size`, `padding`, `visible`, `fullWidth`, `actions`, `confirmMessage`. The step array is `action`, not `actions`, and there is no built-in confirmation.*
 
 ---
 
 ## Split Button
 
 **resolvedName:** `SplitButton`
-**Flags:** `isButton`
+**Flags:** none — **not `isButton`**
 
-A button with a dropdown. The main button triggers a primary action/flow, and the dropdown shows additional options.
+A button with a dropdown: `format` chooses whether its entries are actions or flows.
 
 ### Sections
 
@@ -121,46 +149,43 @@ A button with a dropdown. The main button triggers a primary action/flow, and th
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `elementName` | text | Element name |
-| `label` | text | Primary button label |
-| `icon` | icon | Button icon |
-| `variant` | options | Button variant |
-| `color` | color | Button color |
-| `size` | options | Button size |
+| `title` | title | Button title |
+| `buttonColor` | combobox | `primary`, `secondary`, `error`, `red`, `green`, … (default: `"primary"`) |
 
 **Display**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `padding` | slider | Inner padding (default: `0`) |
-| `width` | text | Width (default: `"auto"`) |
-| `visible` | switch | Visibility (default: `true`) |
+| `margin` | slider | Outer margin (default: `6`) |
+| `width` | text | Width (default: `"150px"`) |
+| `height` | text | Height (default: `"48px"`) |
 
-**Primary Action**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `primaryAction` | action | Action(s) for the main button |
-| `primaryFlowId` | text | Flow for the main button (alternative to actions) |
-| `primaryFlowInput` | transform | Flow input for primary |
-
-**Dropdown Items**
+**Action**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `items` | json | Array of dropdown items: `{ label, icon, action, flowId, flowInput, disabled, divider }` |
+| `format` | combobox | What the entries are: `action` or `flow` |
+| `actions` | fieldGroup | The action entries (default: `[]`) |
+| `flows` | fieldGroup | The flow entries (default: `[]`) |
 
-**Behavior**
+**Advanced**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `disabled` | transform | Disabled state |
+| `disabled` | transform | Disabled state (default: `false`) |
+| `hidden` | transform | Hide the button (default: `false`) |
+| `customButtonColor` | transform | Custom color, overriding `buttonColor` |
+| `customTextSize` | slider | Text size in px |
 
 ### Exposed Functions
 
 | Function | Description |
 |----------|-------------|
-| `execute()` | Trigger the primary action |
+| `execute(payload?)` | Run the selected action |
+
+No tenant in the survey uses this element, so every property here is declared-only.
+
+*Unverified rows: `elementName`-adjacent `label`, `icon`, `variant`, `color`, `size`, `padding`, `visible`, `primaryAction`, `primaryFlowId`, `primaryFlowInput`, `items`. The real shape is `format` + `actions`/`flows`, and there is no separate primary action.*
 
 ---
 
@@ -169,7 +194,7 @@ A button with a dropdown. The main button triggers a primary action/flow, and th
 **resolvedName:** `MenuButton`
 **Flags:** `isButton`
 
-A dropdown menu button. Clicking opens a menu of actions.
+A menu button. `isFlow` chooses whether the menu entries are actions or flows.
 
 ### Sections
 
@@ -177,120 +202,60 @@ A dropdown menu button. Clicking opens a menu of actions.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `elementName` | text | Element name |
-| `label` | text | Button label |
-| `icon` | icon | Button icon (default: ellipsis/more icon) |
-| `variant` | options | Button variant |
-| `color` | color | Button color |
-| `size` | options | Button size |
+| `title` | text | Tooltip shown on hover |
+| `isFlow` | switch | Menu entries are flows rather than actions (default: `false`) |
+| `flows` | fieldGroup | The flow entries |
+| `actions` | fieldGroup | The action entries |
 
 **Display**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `padding` | slider | Inner padding (default: `0`) |
-| `width` | text | Width (default: `"auto"`) |
-| `visible` | switch | Visibility (default: `true`) |
+| `menuIcon` | options | `ellipsis-v` (Kebab), `ellipsis-h` (Meatballs), `bars` (Hamburger), `grip-lines` (Hotdog) (default: `"ellipsis-v"`) |
+| `iconSize` | options | `small`, `medium`, `large` (default: `"small"`) |
+| `margin` | slider | Outer margin (default: `0`) |
+| `width` | text | Width (default: `"48px"`) |
+| `height` | text | Height (default: `"48px"`) |
 
-**Menu Items**
+### Exposed Functions
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `items` | json | Array of menu items: `{ label, icon, action, flowId, flowInput, disabled, divider, color }` |
+The bundle declares no runtime contract for `MenuButton`. That is not evidence it exposes
+nothing — only that the registry does not say.
 
-**Behavior**
+Default props seed `"elementName": "Menu Button"`, the one element whose registry default
+includes a name.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `disabled` | transform | Disabled state |
+*Unverified rows: `label`, `icon`, `variant`, `color`, `size`, `padding`, `visible`, `disabled`, `items` — the real entry lists are `actions` and `flows`, chosen by `isFlow`, and the icon is `menuIcon`.*
 
 ---
 
 ## Custom Action Buttons
 
-The following 6 buttons are pre-configured for common operations. They have the `isActionButton` flag and no editor fields — their behavior is automatic based on their parent context.
+Six toolbox presets carrying an `isCustomActionButton` flag (not `isActionButton`) and an
+`actionProp` factory. **They are not element types.** Each drops an `ActionButton` with a few
+props pre-filled by `defaultCreateProps`, gets the `ActionButton` property panel, and stores
+`type: "ActionButton"`. The only record of which stub was dragged is `definition.custom.editor`.
 
----
+**Nothing reading a stored screen will ever see a `SaveButton`.** Do not search a design blob
+for these names, and do not write them into hand-authored JSON — write an `ActionButton`.
 
-### Create Button
+Their action steps are **not** automatic: the preset seeds an icon, a color and sometimes a
+title, and the `action` array is still yours to fill in.
 
-**resolvedName:** `AddButton`
-**Flags:** `isActionButton`
-**Requires:** Parent Table
+| Preset | Seeded props |
+|---|---|
+| Create | `icon: { icon: "plus", variant: "regular", size: "icon" }`, `buttonColor: "secondary"`, `title: "Create"` |
+| Edit | `icon: { icon: "pencil", variant: "duotone", size: "icon" }`, `buttonColor: "secondary"`, `title: "Update"` |
+| Save | `icon: { icon: "save" }`, `buttonColor: "primary"` |
+| Delete | `icon: { icon: "trash", variant: "solid" }`, `buttonColor: "error"` |
+| Print | `icon: { icon: "print" }` |
+| Search | `icon: { icon: "search", variant: "duotone", size: "icon" }`, `buttonColor: "primary"`, `title: "Search"` |
 
-Triggers the creation flow for the parent Table's model. Opens a create form or dialog based on the table's configuration.
+`EditButton` additionally declares `requiresTable: true`. **Nothing enforces it** — it is
+toolbox chrome, not a drop rule, and it drops happily onto a Table-free screen root. No panel
+control surfaces the constraint either. Whether that is a dead constraint or an unimplemented
+one is unresolved.
 
-**Defaults:**
-- Label: "Create"
-- Icon: plus
-
----
-
-### Edit Button
-
-**resolvedName:** `EditButton`
-**Flags:** `isActionButton`
-**Requires:** Parent Table
-
-Opens the edit view for the selected row in the parent Table.
-
-**Defaults:**
-- Label: "Edit"
-- Icon: pencil
-
----
-
-### Save Button
-
-**resolvedName:** `SaveButton`
-**Flags:** `isActionButton`
-**Requires:** Parent Form
-
-Triggers `save()` on the parent Form, executing the update or create mutation.
-
-**Defaults:**
-- Label: "Save"
-- Icon: floppy-disk
-
----
-
-### Print Button
-
-**resolvedName:** `PrintButton`
-**Flags:** `isActionButton`
-**Requires:** Parent Form
-
-Triggers the browser print dialog for the parent Form's content.
-
-**Defaults:**
-- Label: "Print"
-- Icon: print
-
----
-
-### Delete Button
-
-**resolvedName:** `DeleteButton`
-**Flags:** `isActionButton`
-**Requires:** Parent Table or Form
-
-Triggers the delete mutation for the selected row (Table) or current record (Form). Shows a confirmation dialog before deleting.
-
-**Defaults:**
-- Label: "Delete"
-- Icon: trash
-- Color: red
-
----
-
-### Search Button
-
-**resolvedName:** `SearchButton`
-**Flags:** `isActionButton`
-**Requires:** Parent Table
-
-Triggers a search/filter refresh on the parent Table. Typically used alongside a filter form.
-
-**Defaults:**
-- Label: "Search"
-- Icon: magnifying-glass
+None of the six is documented with a "Requires: parent Table/Form" rule by the platform, and
+none behaves differently by parent context. Their behaviour comes entirely from the `action`
+array you configure.

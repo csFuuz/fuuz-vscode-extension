@@ -117,6 +117,15 @@ Pattern: `{DisplayName}{Counter}` (e.g., `Form1`, `ActionButton2`). Screen root 
 | `ScreenWidget` | Widget | false |
 | `Icon` | Icon | false |
 | `EmbeddedWebpage` | Embedded Webpage | true |
+| `Paper` | Paper | true — hidden from the toolbox |
+| `Text` | Markdown Text | false — hidden, deprecated |
+
+`Screen` is the fourth hidden Layout type and is always the ROOT node. `Screen`,
+`ScreenAccordion` and `ScreenAccordionGroup` are three **distinct** stored types — `Screen` is
+not "internally `ScreenAccordion`".
+
+`TabBar` is `isCanvas: false` but is still a parent: it keeps each tab panel in `linkedNodes`,
+never in `nodes`. See *Named slots* below.
 
 **Data:**
 
@@ -131,11 +140,98 @@ Pattern: `{DisplayName}{Counter}` (e.g., `Form1`, `ActionButton2`). Screen root 
 | `SchedulingConfiguration` | Scheduling Config | false |
 | `DataTreeView` | Data Tree | true |
 
-**Input** (all isCanvas: false, all require parent Form): `TextInput`, `PasswordInput`, `ScanTextInput`, `NumberInput`, `IntegerInput`, `FloatInput`, `SliderInput`, `DateInput`, `TimeInput`, `DateTimeInput`, `DateRangeInput`, `DurationInput`, `Checkbox`, `Switch`, `SelectInput`, `OptionsInput`, `TimeZoneInput`, `ColorInput`, `IconPicker`, `AddressInput`, `MeasureInput`, `RatioMeasureInput`, `ArrayInput`, `CustomFieldsInput`, `RichTextInput`, `MarkdownInput`, `CodeEditorInput`, `JSONataInput`, `TransformInput`, `JSONInput`, `JSONSchemaInput`, `GraphQLBuilderInput`, `WrappedGraphQLPredicate`, `FileUpload`, `Image`, `PDFViewer`, `SVGInput`, `DisplayText`, `ProgressBar`, `Visualization`, `RRuleInput`
+**Input** (all isCanvas: false; all require a form-shaped host except `SVGInput`): `TextInput`,
+`Password`, `ScanTextInput`, `EmailInput`, `UriInput`, `NumberInput`, `IntegerInput`,
+`FloatInput`, `SliderInput`, `DateInput`, `TimeInput`, `DateTimeInput`, `DateRangeInput`,
+`DurationInput`, `Checkbox`, `Switch`, `SelectInput`, `OptionsInput`, `TimeZoneInput`,
+`ColorInput`, `IconPicker`, `AddressInput`, `MeasureInput`, `RatioMeasureInput`, `ArrayInput`,
+`CustomFieldsInput`, `RichTextInput`, `MarkdownInput`, `CodeEditorInput`, `JSONataInput`,
+`TransformInput`, `JSONInput`, `JSONSchemaInput`, `JSONSchemaPredicateInput`,
+`GraphQLBuilderInput`, `WrappedGraphQLPredicate`, `FileUpload`, `Image`, `PDFViewer`,
+`SVGInput`, `DisplayText`, `ProgressBar`, `Visualization`, `RRuleInput`
 
-**Display** (all isCanvas: false): `CalendarInput`, `Chart`, `Timer`, `EventConsoleAdapter`
+**`PasswordInput` does not exist.** The element is `Password`. Three more Input types are hidden
+from the toolbox and only appear on screens that already carry them: `Combobox`, `GeneralInput`,
+`ImageUpload`.
 
-**Interaction** (all isCanvas: false): `FlowButton`, `ActionButton`, `SplitButton`, `MenuButton`, `AddButton`, `EditButton`, `SaveButton`, `PrintButton`, `DeleteButton`, `SearchButton`
+**Display** (all isCanvas: false): `CalendarInput`, `Chart`, `Timer`, `EventConsoleAdapter`.
+The registry's Display category also contains `DisplayText`, `Image`, `PDFViewer`,
+`ProgressBar`, `SVGInput` and `Visualization`, listed under Input above because they are
+form-bound.
+
+**Interaction** (all isCanvas: false): `FlowButton`, `ActionButton`, `SplitButton`, `MenuButton`,
+plus the six toolbox presets `AddButton`, `EditButton`, `SaveButton`, `PrintButton`,
+`DeleteButton`, `SearchButton`.
+
+**The six presets are not element types.** Each one drops an `ActionButton` with a few props
+pre-filled and persists as `type: "ActionButton"`; the only trace of which stub was dragged is
+`definition.custom.editor`. Never write `"type": "SaveButton"` into a design blob — nothing will
+resolve it.
+
+### Placement Rules
+
+One shared validator decides every drop, from the target's and the dragged element's flags:
+
+| Condition | Outcome |
+|---|---|
+| dragged `isTableColumn` | only directly inside a Table |
+| dragged `requiresForm`, target has no `isForm` ancestor | refused |
+| dragged `isGridCell`, target's `layout` is not `"grid"` | refused |
+| into a Form | only layout containers directly |
+| into a Table | only table columns |
+| into a Button Group | only elements flagged `isButton` — which excludes `SplitButton` |
+
+**Refusals are silent.** The registry declares seven rejection messages and **none of them is
+ever rendered** — a refused drop simply creates no node. Never take "no error appeared" for
+acceptance; check that the node exists in the saved design.
+
+**"Requires a Form" means "requires a form-shaped host."** The test is for an ancestor carrying
+`isForm`, which is `Form` *and* `Cards`. Inputs drop straight into `Cards` with no Form in the
+tree. Because a Form itself accepts only layout containers as direct children, the working shape
+is **Form → Container → inputs**.
+
+`DisplayText` really does carry `requiresForm` and really is refused outside a form-shaped host,
+despite being read-only.
+
+`EditButton` declares `requiresTable: true` that **nothing enforces** — it drops onto a
+Table-free screen root.
+
+### Named Slots (`linkedNodes`)
+
+`TabBar.nodes` is always empty. Each tab panel is a `linkedNodes` entry keyed
+`<elementName>Detail<index>` holding an ordinary `Container`. At creation the element name is
+not yet set, so the first key is the literal string **`"undefinedDetail0"`**; the key is
+re-derived on rename, stranding the old Container. A stranded panel is still stored, still
+emitted as a plain `Container` row, and renders nowhere — the flat rows cannot tell you it is an
+orphan. Compare the TabBar's `linkedNodes` map against the rows to find them.
+
+### Property Names Have Two Identities
+
+Every registry property carries a `name` (editor-config id) and a `dataPath` (the prop-bag key
+that is stored). They differ on 158 of 1,664 properties — `fields` → `query.fields`,
+`targetDataPath` → `target.dataPath`, `flexLayout` → `flex`. **Write the `dataPath`.**
+
+`SliderInput` is the one inversion: its bounds are declared under the *names*
+`validation.minValue` / `validation.maxValue` but stored **top-level** as `minValue` /
+`maxValue`. Copying the `NumberInput` shape (`validation.minValue`) into a Slider silently sets
+nothing.
+
+### The Backend Accepts Anything
+
+`ScreenElementNode.definition` and `.configuration` are untyped JSON, so any key you send is
+stored and round-trips perfectly. `sx`, `elevation`, `tooltip`, `aria-label`, `data-testid` and
+similar React/MUI props change nothing at render — Containers do not even spread them onto the
+DOM. **"The API accepted it" is not evidence a property works.**
+
+The one exception is `TextInput.placeholder`, which reaches the underlying native `<input>` where
+the *browser* honours the attribute. It is declared by no element and used by no tenant; treat it
+as a browser convenience, not a platform feature.
+
+### Flat Rows Can Lag the Design Blob
+
+`screenElement` rows are projected from `screenVersion.design`. Immediately after a save, all
+current non-ROOT nodes have been observed missing from the flat rows while four deleted nodes
+were still present. A missing flat row is not proof the element was not stored.
 
 ---
 
@@ -415,6 +511,13 @@ Form, Table, and Cards dynamically build GraphQL queries at runtime:
 | `readPreference` | `"primaryPreferred"` or `"secondary"` |
 | `query` | Override: raw GraphQL string (skips auto-generation) |
 
+These are the sub-keys of the `query` prop, so their stored paths are `query.model`,
+`query.fields`, `query.dataPath`, and so on — which is also how the property panel is keyed.
+The registry's `name` for `query.fields` is the bare `fields`; write the nested path.
+`query.dataPath` and `query.query` have **no editor control** on Form or Table: they are seeded
+from the registry defaults (`"edges[0]"` and `"edges"`) and are only reachable by hand-editing
+the JSON.
+
 ### How Fields Contribute
 
 Each child element's `dataPath` automatically registers with the parent data provider and adds to the generated query. There are three scenarios:
@@ -500,7 +603,11 @@ ROOT (Screen)
     col2 (TableColumn, dataPath: "createdAt", label: "Created At", format: "datetime")
 ```
 
-**Table `selectable` prop:** `"single"` = only one row at a time, `"multiple"` = any number of rows.
+`AddButton` and `SearchButton` above name **toolbox presets**, not stored types — both save as
+`type: "ActionButton"`, and their `action` arrays are yours to configure. Hand-written JSON must
+say `ActionButton`.
+
+**Table `selectable` prop:** `"single"` = only one row at a time, `"multiple"` = any number of rows (default).
 
 **`selectedRows`** is an array of objects, where each object contains the row data keyed by `dataPath` with the corresponding values. Access via `$components.Table1.selectedRows`. Common patterns:
 
@@ -562,7 +669,7 @@ pageLoadAction loads data via `$query()` then calls `$components.Screen.fn.setCo
 | `Address` | `AddressInput` | needs query.fields for sub-fields |
 | `RichText` | `RichTextInput` | |
 | `Duration` | `DurationInput` | |
-| Reference | `SelectInput` | set `api`, `dataModel`, `labelField`, query.fields |
+| Reference | `SelectInput` | set `api`, `dataModel`, `selectFields`, `labelPath`. `labelField` belongs to the deprecated `Combobox`, not `SelectInput` |
 
 ### Container Layout System
 
@@ -594,7 +701,9 @@ Containers are the primary layout mechanism. Every Container is a CSS flex or gr
 | `gap` | Space between grid cells (e.g., `"12px"`) |
 | `justifyItems` | Cell alignment: `start`, `center`, `end` |
 
-Use `GridCell` children with `colSpan`/`rowSpan` to span multiple cells.
+Use `GridCell` children with `colSpan`/`rowSpan` to span multiple cells — those two, plus `style`,
+are the only properties `GridCell` declares. A `GridCell` is refused by any Container whose
+`layout` is not `"grid"`, silently. No surveyed tenant uses `GridCell` at all.
 
 #### Sizing Props (on any Container or child)
 
@@ -612,7 +721,7 @@ Use `GridCell` children with `colSpan`/`rowSpan` to span multiple cells.
 | Prop | Default | Description |
 |------|---------|-------------|
 | `padding` | `0` | Inner spacing (pixels, 0–96). Applies uniformly unless overridden. |
-| `paddingTop`, `paddingBottom`, `paddingLeft`, `paddingRight` | — | Override individual sides |
+| `paddingTop`, `paddingBottom`, `paddingLeft`, `paddingRight` | — | Override individual sides. **Not declared by the registry and not exposed in the panel**, but written by real screens in two tenants — unproven, hand-written JSON only |
 | `margin` | `0` | Outer spacing (pixels, 0–96) |
 
 #### Visual Props
@@ -623,7 +732,27 @@ Use `GridCell` children with `colSpan`/`rowSpan` to span multiple cells.
 | `customBackground` | — | Arbitrary color when `background: "custom"` |
 | `shadow` | `false` | Box shadow for card-like elevation |
 | `borderRadius` | `0` | Corner rounding in pixels |
-| `overflowY` | — | `"auto"` for scrollable containers |
+| `overflowY` | — | **Container declares no `overflow` or `overflowY` property**, and no screen in the four surveyed tenants stores either. For a scrollable region, constrain the height and use `style` (a transform holding a CSS object, e.g. `{ "overflowY": "auto" }`), which *is* declared — and give the content a `minHeight` floor, or it shrinks to fit and never scrolls. Both halves are runtime-verified; see the two-part recipe below |
+
+#### Additional Styles (`style`)
+
+Anything CSS that no panel control covers goes in `style` — a transform holding a **React
+inline-style object** (not CSS-in-JS, not a stylesheet), declared by `Container`, `GridCell`,
+`EmbeddedWebpage` and `TableColumn`. It is merged after everything the panel writes to the same
+node, so it wins over `padding`, `margin`, `height`, `borderRadius`, `bordersInput`, `gap`, the
+flex/grid layout props, `shadow` and `background`. 274 declarations were measured at runtime in
+August 2026; the property-by-property reference is in the `fuuz-screen-styling` skill.
+
+What to know while laying a screen out:
+
+| | |
+|---|---|
+| Write camelCase keys | kebab resolves for string values but a bare number under a kebab key is dropped (`{"z-index": 7}`) or silently corrupted (`{"line-height": 1.7}` → `1.7px`) |
+| Bare numbers get `px` | except `lineHeight`, `zIndex`, `opacity`, `flexGrow`, `order`. `{"aspectRatio": 2}` is rejected — write `"2 / 1"` |
+| `style.width` will not stick on a Container | it reaches the DOM and loses to the wrapper's flex layout. Use `{"flex": "none"}` with it, or `minWidth`/`maxWidth` as bounds. `height` applies normally |
+| No selectors, no at-rules | `&:hover`, `&::before`, `& div` and `@media` keys are inert, and `animation` names a `@keyframes` rule that cannot exist, so nothing animates. `transition` works |
+| A malformed value blanks the whole screen | a `style` holding a string or an array, or a transform that throws or returns a non-object, renders the app shell and an empty screen body with no error message |
+| Watch for quoted keys | the designer's JSON input re-quotes key names on each edit (`box-shadow` → `"box-shadow"`), and a quoted name matches no CSS property. Rewrite the key rather than re-editing it |
 
 #### Common Layout Recipes
 
@@ -665,10 +794,14 @@ Sidebar stays fixed, main content fills remaining space.
 ```
 Parent: { flexDirection: "column", height: "100%" }
   Header:  { flexGrow: false, flexDirection: "row" }
-  Content: { flexGrow: true, overflowY: "auto", flexDirection: "column" }
+  Content: { flexGrow: true, style: { overflowY: "auto", scrollbarWidth: "thin" }, flexDirection: "column" }
+    Inner: { style: { minHeight: "400px" } }
   Footer:  { flexGrow: false, flexDirection: "row" }
 ```
-Content area scrolls independently while header/footer stay fixed.
+Content area scrolls independently while header/footer stay fixed. **The overflow keyword is only
+half of it** — the content inside the scroller is a flex item whose automatic minimum size comes
+from its content, so without a `minHeight` floor it shrinks to fit and never overflows. Both
+halves were measured by scrolling the box, not by reading the keyword back.
 
 **Grid of equal cards:**
 ```json
@@ -691,7 +824,9 @@ Children fill a 3-column grid with equal-width cells.
 1. **Children not side-by-side**: Parent defaults to `flexDirection: "column"`. Set `"row"` for horizontal layout.
 2. **Row items stretching vertically**: Default `alignItems: "stretch"` makes row children full height. Use `"center"` or `"flex-start"` instead.
 3. **Content not filling space**: Set `flexGrow: true` on the container that should expand.
-4. **Content overflowing**: Add `overflowY: "auto"` to scrollable containers and ensure they have a constrained height (via parent `height: "100%"` or `flexGrow: true`).
+4. **Content overflowing**: constrain the height (parent `height: "100%"` or `flexGrow: true`) and put the overflow rule in `style`, e.g. `"style": { "overflowY": "auto" }`. A bare `overflowY` prop is not a declared Container property.
+7. **Scroller declared but nothing scrolls**: `overflowY: "auto"` alone is half the recipe — give the content a `minHeight`, or the flex item shrinks to fit and there is nothing to scroll.
+8. **A width in `style` that DevTools shows and nothing obeys**: `style.width` reaches the element and is overridden by the wrapper's flex layout. Write `{"flex": "none", "width": "…"}`, or bound it with `minWidth`/`maxWidth`, or use the panel's Width field.
 5. **Items not wrapping**: `flexWrap` defaults to `true`, but if set to `false`, items stay on one line and may overflow.
 6. **Grid items not spanning**: Use `GridCell` with `colSpan`/`rowSpan` inside grid-layout containers.
 
