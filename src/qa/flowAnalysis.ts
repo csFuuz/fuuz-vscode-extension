@@ -17,7 +17,7 @@
  * Cross-flow: repeated inline queries → saved query; repeated inline scripts →
  * saved script.
  */
-import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER } from './complianceTypes';
+import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER, scoreOf } from './complianceTypes';
 import { FlowGraph, FlowNode, FlowAnalysisContext } from './flowTypes';
 import { lookupModel } from './modelContext';
 import { judgeName, humanize, scriptTitle, savedName } from './naming';
@@ -490,7 +490,7 @@ function toReport(name: string, rules: RuleResult[]): ComplianceReport {
   const checks = rules.reduce((n, r) => n + r.checks, 0);
   const passed = rules.reduce((n, r) => n + r.passed, 0);
   const findings = rules.flatMap(r => r.findings).sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
-  return { kind: 'flow', name, score: checks === 0 ? 100 : Math.round((passed / checks) * 100), checks, passed, rules, findings };
+  return { kind: 'flow', name, ...scoreOf(checks, passed), checks, passed, rules, findings };
 }
 
 export function runFlowGraphCompliance(g: FlowGraph, ctx?: FlowAnalysisContext): ComplianceReport {

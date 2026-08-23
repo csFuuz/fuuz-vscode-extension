@@ -7,7 +7,7 @@
  * so it always mirrors the real rule set (ids + titles) with no duplicate list
  * to maintain. Pure — no VS Code import.
  */
-import { ComplianceReport } from './complianceTypes';
+import { ComplianceReport, scoreOf } from './complianceTypes';
 import { analyzeFlow, analyzeFlowsCrossCutting } from './flowAnalysis';
 import { analyzeScreen } from './screenAnalysis';
 import { DATA_MODEL_RULES } from './dataModelProfile';
@@ -45,5 +45,5 @@ export function filterReport(report: ComplianceReport, excluded: ReadonlySet<str
   const findings = report.findings.filter(f => !excluded.has(f.ruleId));
   const checks = rules.reduce((n, r) => n + r.checks, 0);
   const passed = rules.reduce((n, r) => n + r.passed, 0);
-  return { ...report, rules, findings, checks, passed, score: checks === 0 ? 100 : Math.round((passed / checks) * 100) };
+  return { ...report, rules, findings, checks, passed, ...scoreOf(checks, passed) };
 }

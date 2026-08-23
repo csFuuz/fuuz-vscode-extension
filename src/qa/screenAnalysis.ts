@@ -8,7 +8,7 @@
  * $components/$metadata referenced directly inside a $executeFlow argument,
  * ambiguous screen naming, and missing version/release notes (devops).
  */
-import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER } from './complianceTypes';
+import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER, scoreOf } from './complianceTypes';
 import { ScreenElementNode, ScreenModel } from './screenTypes';
 import { ModelInfo } from './flowTypes';
 import { judgeName } from './naming';
@@ -242,7 +242,7 @@ function toReport(name: string, rules: RuleResult[]): ComplianceReport {
   const checks = rules.reduce((n, r) => n + r.checks, 0);
   const passed = rules.reduce((n, r) => n + r.passed, 0);
   const findings = rules.flatMap(r => r.findings).sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
-  return { kind: 'screen', name, score: checks === 0 ? 100 : Math.round((passed / checks) * 100), checks, passed, rules, findings };
+  return { kind: 'screen', name, ...scoreOf(checks, passed), checks, passed, rules, findings };
 }
 
 export function runScreenCompliance(m: ScreenModel, models?: Map<string, ModelInfo>): ComplianceReport {

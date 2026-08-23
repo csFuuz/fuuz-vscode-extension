@@ -2,6 +2,28 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## 1.2.1
+
+### Fixed — a compliance report can no longer claim 100% for something it never checked
+Found by running the shipped screen analyzer against real deployed screens on a
+live tenant. Five places computed `checks === 0 ? 100`, so an artifact **no rule
+could assert anything about** — one that failed to load, or an empty tenant audit
+— reported as **fully compliant**. That is the one answer a checker must never
+give: it is indistinguishable from a genuine pass.
+
+Scoring now goes through a single `scoreOf()` helper that returns
+`inconclusive: true` instead, and the report renders an empty gauge reading
+**—** with the verdict *"Nothing to check — inconclusive"* rather than a green
+100%. A 0% gauge would have been just as wrong in the other direction.
+
+A test that asserted the old behaviour (`empty input is a clean 100`) has been
+inverted, with the reason recorded next to it.
+
+Separately worth knowing, because it is a different thing: an **empty screen**
+still scores 100 legitimately — rules like "fewer than 75 elements" pass on
+nothing. The score is arithmetically right and means nothing, so emptiness has to
+be reported on its own rather than inferred from a score.
+
 ## 1.2.0
 
 > 🧪 **Open Beta** — actively developed and usable; features and APIs may change.

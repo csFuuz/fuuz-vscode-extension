@@ -10,6 +10,7 @@ import {
   GenericDescriptor,
   RuleResult,
   SEVERITY_ORDER,
+  scoreOf,
 } from './complianceTypes';
 import { DATA_MODEL_RULES } from './dataModelProfile';
 import { KIND_RULES } from './profiles';
@@ -22,11 +23,10 @@ export function runCompliance(descriptor: ArtifactDescriptor): ComplianceReport 
 
   const checks = rules.reduce((n, r) => n + r.checks, 0);
   const passed = rules.reduce((n, r) => n + r.passed, 0);
-  const score = checks === 0 ? 100 : Math.round((passed / checks) * 100);
 
   const findings: Finding[] = rules
     .flatMap(r => r.findings)
     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 
-  return { kind: descriptor.kind, name: descriptor.name, score, checks, passed, rules, findings };
+  return { kind: descriptor.kind, name: descriptor.name, ...scoreOf(checks, passed), checks, passed, rules, findings };
 }

@@ -11,8 +11,20 @@ const post = (m: ReportInbound) => vscode.postMessage(m);
 const SEV_ICON: Record<Severity, string> = { error: '🔴', warn: '🟡', info: '🔵' };
 const SEV_CLASS: Record<Severity, string> = { error: 'sev-error', warn: 'sev-warn', info: 'sev-info' };
 
-function Gauge({ score }: { score: number }) {
+function Gauge({ score, inconclusive }: { score: number; inconclusive?: boolean }) {
   const r = 36, c = 2 * Math.PI * r;
+  // Nothing was checked: draw an empty track and say so. A 0% gauge would read as
+  // "everything failed", which is a different and equally wrong claim.
+  if (inconclusive) {
+    return (
+      <div className="gauge">
+        <svg width="84" height="84" viewBox="0 0 84 84">
+          <circle className="track" cx="42" cy="42" r={r} fill="none" strokeWidth="8" />
+        </svg>
+        <div className="num" title="No rule could assert anything against this artifact">—</div>
+      </div>
+    );
+  }
   const cls = score >= 90 ? 'arc-good' : score >= 80 ? 'arc-ok' : 'arc-bad';
   const dash = `${(score / 100) * c} ${c}`;
   return (
@@ -41,7 +53,8 @@ function FindingRow({ f }: { f: Finding }) {
   );
 }
 
-function verdict(score: number): string {
+function verdict(score: number, inconclusive?: boolean): string {
+  if (inconclusive) return 'Nothing to check — inconclusive';
   if (score >= 100) return 'Fully compliant';
   if (score >= 90) return 'Compliant — minor notes';
   if (score >= 80) return 'Mostly compliant';
@@ -68,9 +81,9 @@ function App() {
   return (
     <>
       <header>
-        <Gauge score={report.score} />
+        <Gauge score={report.score} inconclusive={report.inconclusive} />
         <div style={{ flex: 1 }}>
-          <h1>{report.name} — {verdict(report.score)}</h1>
+          <h1>{report.name} — {verdict(report.score, report.inconclusive)}</h1>
           <div className="sub">{report.passed}/{report.checks} checks passed · kind: {report.kind}</div>
           <div className="counts">
             <span className="count sev-error"><b>{counts.error}</b> errors</span>

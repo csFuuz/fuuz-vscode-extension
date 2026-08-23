@@ -33,8 +33,13 @@ test('runTenantAudit: findings are artifact-prefixed and error-sorted', () => {
   assert.ok(audit.findings.some(f => f.message === '[A] minor'));
 });
 
-test('runTenantAudit: empty input is a clean 100', () => {
+test('runTenantAudit: auditing nothing is INCONCLUSIVE, never a clean 100', () => {
+  // This test used to assert score === 100 for an empty audit, which is the one
+  // answer a checker must never give: it is indistinguishable from a real pass,
+  // so a tenant whose artifacts could not be read reported as fully compliant.
   const audit = runTenantAudit('t', []);
-  assert.equal(audit.score, 100);
+  assert.equal(audit.inconclusive, true);
+  assert.notEqual(audit.score, 100, 'nothing checked must not read as fully compliant');
+  assert.equal(audit.checks, 0);
   assert.match(audit.findings[0].message, /0 artifact/);
 });

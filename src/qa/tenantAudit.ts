@@ -4,7 +4,7 @@
  * scorecard (worst first), and the consolidated findings (errors first, capped).
  * Pure — no VS Code/Node.
  */
-import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER } from './complianceTypes';
+import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER, scoreOf } from './complianceTypes';
 
 /** Max findings to surface in the summary before truncating with a note. */
 const FINDING_CAP = 200;
@@ -47,7 +47,7 @@ export function runTenantAudit(tenantName: string, reports: ComplianceReport[]):
   return {
     kind: 'dataModel', // generic container kind for the summary view
     name: `Tenant audit — ${tenantName}`,
-    score: checks === 0 ? 100 : Math.round((passed / checks) * 100),
+    ...scoreOf(checks, passed),
     checks,
     passed,
     rules,

@@ -93,6 +93,25 @@ export interface ComplianceReport {
   rules: RuleResult[];
   /** All findings, flattened and sorted error → warn → info. */
   findings: Finding[];
+  /**
+   * True when no rule could assert anything (`checks === 0`) — an artifact the
+   * checker could not read, or one with nothing in it. The score is then
+   * meaningless, so it must NOT be presented as a pass.
+   */
+  inconclusive?: boolean;
+}
+
+/**
+ * Score a rule set, and say so when there was nothing to score.
+ *
+ * Zero checks used to yield 100 — so an artifact the analyzer knew nothing about
+ * reported as fully compliant. That is the worst failure a checker can have: it
+ * is indistinguishable from a genuine pass, and it was reachable in five places
+ * (models, flows, screens, the rule-catalog filter, and the tenant audit).
+ */
+export function scoreOf(checks: number, passed: number): { score: number; inconclusive?: boolean } {
+  if (checks === 0) return { score: 0, inconclusive: true };
+  return { score: Math.round((passed / checks) * 100) };
 }
 
 export const SEVERITY_ORDER: Record<Severity, number> = { error: 0, warn: 1, info: 2 };
