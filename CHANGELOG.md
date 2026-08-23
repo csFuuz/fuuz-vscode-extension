@@ -2,7 +2,9 @@
 
 All notable changes to **Fuuz for VS Code**.
 
-## Unreleased
+## 1.2.0
+
+> 🧪 **Open Beta** — actively developed and usable; features and APIs may change.
 
 ### Added — UI validation in a real, signed-in browser
 Pushing a screen over MCP proves the platform *accepted* it, not that it renders,
@@ -91,6 +93,49 @@ that silently eat clicks), Monaco (auto-closed pairs, virtualised lines that mak
 a correct query read back short, the clipboard round-trip), and verification —
 including which of the three screen surfaces emits transform logging at all.
 
+
+### Changed — the screen skills, corrected against the registry and the runtime
+A parity study against the live element resolver, the designer's property registry
+and four production tenants found these skills documenting properties the platform
+does not have. The registry declares **84** element types where the skills claimed
+75, and invented `PasswordInput` for an element really called `Password`.
+
+- Rows that nothing declares and no production screen stores are marked
+  **Unverified** rather than presented as fact — `fontSize` on inputs, lifecycle
+  hooks on Table, most of the Table display props.
+- **A registry property has two identities** — `name` (the editor id) and
+  `dataPath` (the key actually written and stored) — and they differ on **158 of
+  1,664** properties. Everything is now documented by `dataPath`, because that is
+  what lands in the stored props.
+- **An input needs a form-shaped *ancestor*, not a Form parent.** A Form accepts
+  only layout containers as direct children, so the working shape is
+  Form → Container → inputs.
+- `fuuz-screen-styling` gains a runtime-measured `style` reference: **274**
+  declarations rendered and read back with `getComputedStyle`, 241 working and 27
+  inert. It separates the two ways a declaration fails, because they debug
+  differently — never reaching the DOM, versus reaching the inline `style`
+  attribute and losing to something else. A style visibly present in DevTools and
+  doing nothing is the second kind.
+- These files are also normalized from CRLF to LF.
+
+### Fixed — the shipped skills are self-contained
+The verified rows pointed **65 times** at a findings document that ships with
+nothing, so a reader following the reference found no file and an assistant hunting
+for one wasted a turn guessing — the same failure 1.0.72 describes. The findings
+stay; the pointer is gone, and each *Unverified* note now carries its own reason.
+A shipped skill cites no path a reader cannot open.
+
+### Docs
+- The wiki gains **UI Validation** and **Fuuz Skills** pages, and its Command
+  Reference is regenerated from `package.json` — it had documented three commands
+  that no longer exist and missed nineteen that do.
+- Corrected two stale claims: *Using with Claude Code* pointed at the removed
+  **Create New Tool** command, and said disabled agent tools are enforced by a
+  local gating proxy. **That proxy was removed in 1.1.0** — disabling now steers an
+  assistant rather than stopping it, which matters if you were relying on it.
+  Enforcement is the API user's policies in Fuuz.
+- The QA harness page described free-text personas; it tests tenant **roles**, one
+  per session, with optional stored test users.
 
 ## 1.1.0
 

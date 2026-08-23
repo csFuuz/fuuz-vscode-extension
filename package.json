@@ -2,7 +2,7 @@
   "name": "fuuz-vscode-extension",
   "displayName": "Fuuz for VS Code (Open Beta)",
   "description": "VS Code extension for Fuuz application management with multi-tenant MCP support — browse tenants, run schema/flow/screen compliance checks, deploy, and register the Fuuz MCP server for your AI coding assistant",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "cscott",
   "icon": "media/icon.png",
   "repository": {
