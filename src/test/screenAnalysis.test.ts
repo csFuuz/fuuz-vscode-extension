@@ -108,6 +108,37 @@ test('screen-integrate flags $integrate in a screen element transform', () => {
   assert.ok(r.findings.some(f => f.severity === 'error' && /\$integrate/.test(f.message)));
 });
 
+test('screen-executeflow-context flags $components/$metadata referenced directly inside $executeFlow', () => {
+  const bad = [
+    { id: 'f1', type: 'Form', name: 'Serial Form', configuration: { query: { dataTransform: {
+      transform: '$executeFlow("f", { "serial": $components.Form1.data.serial, "mode": $metadata.settings.ThemeMode })',
+      remote: true } } } },
+  ];
+  const r = analyzeScreen(buildScreenModel('S', bad)).find(x => x.ruleId === 'screen-executeflow-context')!;
+  assert.equal(r.checks, 1);
+  assert.equal(r.passed, 0);
+  assert.ok(r.findings.some(f => f.severity === 'warn' && f.where === 'Serial Form' && /\$executeFlow/.test(f.message)));
+});
+
+test('screen-executeflow-context does not flag when $components/$metadata are bound to $vars first', () => {
+  const good = [
+    { id: 'f1', type: 'Form', name: 'Bound Form', configuration: { query: { dataTransform: {
+      transform: '( $serial := $components.Form1.data.serial; $mode := $metadata.settings.ThemeMode; $executeFlow("f", { "serial": $serial, "mode": $mode }) )',
+      remote: true } } } },
+  ];
+  const r = analyzeScreen(buildScreenModel('S', good)).find(x => x.ruleId === 'screen-executeflow-context')!;
+  assert.equal(r.checks, 1);
+  assert.equal(r.passed, 1);
+  assert.equal(r.findings.length, 0);
+
+  // Transforms with no $executeFlow are skipped entirely (checks === 0).
+  const skipped = analyzeScreen(buildScreenModel('S', [
+    { id: 'f1', type: 'Form', name: 'Plain', configuration: { query: { dataTransform: { transform: 'edges[0]', remote: true } } } },
+  ])).find(x => x.ruleId === 'screen-executeflow-context')!;
+  assert.equal(skipped.checks, 0);
+  assert.equal(skipped.findings.length, 0);
+});
+
 test('screen-perf-binding flags a large transactional binding without a filter', () => {
   const models = new Map([
     ['WorkOrder', { name: 'WorkOrder', type: 'transactional', recordCount: 900000 }],

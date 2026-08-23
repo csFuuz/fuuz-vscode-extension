@@ -135,6 +135,18 @@ tenant's Bearer token, stored in VS Code **SecretStorage** — never in
   (Servers register as **direct streamable-HTTP**; the former stdio gating proxy
   that hard-blocked calls has been removed.) Data models lazy-load their fields
   when expanded.
+- **Fuuz skills for your assistant** — **Install Fuuz Skills** copies the bundled
+  platform skills into `.claude/skills/`, where your AI assistant discovers them
+  by name: data models, flows and flow nodes, screens and screen elements,
+  expressions, GraphQL, integration, styling — plus **UI validation** (below).
+  Each of the three build areas carries a *field notes* reference of platform
+  behaviour that fails **silently**, so your assistant does not rediscover it at
+  your expense. See [Skills](#skills).
+- **UI validation in a real browser** — **Start UI Session** opens one signed-in
+  Chrome you log into *once*; **Validate UI with Claude** hands that same window
+  to Claude over CDP, so it can drive the app, the designers and the screen
+  runner without ever asking you to sign in again. See
+  [UI validation](#ui-validation-a-real-signed-in-browser).
 - **App context file** — **Generate App Context File** writes `.fuuz/AVAILABLE.md`,
   a snapshot of the active tenant that your AI coding assistant can read.
 
@@ -206,6 +218,100 @@ Claude.
 > Claude Code. If you commit a project `.mcp.json`, make sure collaborators export
 > the env vars, or that entry won't connect.
 
+## Skills
+
+**Fuuz: Install Fuuz Skills** copies the bundled skills to `.claude/skills/`.
+That is where Claude Code discovers project skills — the copy is also yours to
+edit and commit, so a team can extend them.
+
+| skill | covers |
+| --- | --- |
+| `fuuz-data-model` | model definitions, fields, relations, triggers, sequences, indices — **plus `deploy-rules.md`** |
+| `fuuz-data-flow` | flow structure, environments, patterns — **plus `runtime-rules.md`** |
+| `fuuz-data-flow-nodes` | every node type's exact `data` schema, by category |
+| `fuuz-screen-design` | Craft.js node maps, transforms, queries, patterns — **plus `silent-failures.md`** |
+| `fuuz-screen-elements` | per-element props, by category |
+| `fuuz-screen-styling` | the design-system tokens and how styles resolve |
+| `fuuz-expressions` | JSONata and JavaScript in the platform, and the context bound to each |
+| `fuuz-graphql` | queries, predicates, pagination |
+| `fuuz-integration` | connectors, REST, databases |
+| `fuuz-ui-validation` | driving the real UI in a real browser (below) |
+
+The three **field-notes** files are the part that saves the most time. They
+document platform behaviour that produces **no error** — where a deploy reports
+success and serves an incomplete schema, a flow runs and writes nothing, or a
+screen renders blank. Each entry was found by a failure on a live tenant, so your
+assistant can recognise the symptom instead of debugging its own correct code.
+A few examples of what they will stop you losing an afternoon to:
+
+- A data-model name may not contain digits, and may not end in `Node`, `Edge` or
+  `Document`. An `ID` field's name must end in `Id` — and the error names neither
+  the field nor which of the two identifiers to change.
+- Deployment is asynchronous, and a reverse collection to a not-yet-deployed child
+  is dropped **silently**. The only proof a deploy worked is introspecting
+  `<Name>Node { fields }`. The most recently deployed version serves, not the
+  highest number.
+- A flow's request payload is out of scope after the first node, so a `mode` gate
+  written after an HTTP call is always false — every run becomes a silent dry run
+  that reports success.
+- The node type is `mutate`, not `mutation`. An invalid type deploys clean,
+  reports `deployed: true`, and then answers `NotFoundError`, which reads like a
+  propagation problem.
+- A screen component missing `type: "canvas"` deploys `true` and renders a
+  completely **empty** page; an element missing `elementName` is dropped; a filter
+  form with nothing calling `fn.search()` filters nothing.
+- `format: "currency"` ignores `formatString`, and numeral's `%` multiplies by
+  100 — so a percentage stored as `80` renders as `8000%`.
+
+## UI validation: a real, signed-in browser
+
+Pushing a screen over MCP proves the platform *accepted* it. It does not prove it
+renders, binds, queries or saves — and a screen can deploy clean and render blank
+with no error at all. So the extension makes "go and look" a two-command job.
+
+**1. Fuuz: Start UI Session (Browser)** — installs the harness into `.fuuz/ui`,
+then opens a headed Chrome with its own persistent profile and the DevTools port
+open. Sign in once and **leave the window open**. The browser is spawned
+*detached*, so it outlives the command — a browser launched as a child process
+would die with it, and the next attach would look like a failed login.
+
+**2. Fuuz: Validate UI with Claude** — describe what to check. The extension
+writes an MCP config that points the Playwright MCP at *that already-signed-in
+window* (`--cdp-endpoint`), adds your tenant's Fuuz MCP so the agent can verify by
+reading the record back, and launches Claude with the `fuuz-ui-validation` skill.
+Choose whether it confirms before writes or runs with full authority.
+
+Why attach instead of launching a fresh browser: a second Chrome comes up signed
+**out**, and an agent that meets a login page tends to report it as a broken
+screen. Attaching also means the session survives between sessions — you log in
+in the morning, not per task.
+
+The same session is drivable from the terminal, which is the right tool for a loop
+or a whole-panel read:
+
+```bash
+node .fuuz/ui/fuuz-ui.cjs status                       # alive? which tenant/role?
+node .fuuz/ui/fuuz-ui.cjs open 'screen:<versionId>'    # the screen-runner route
+node .fuuz/ui/fuuz-ui.cjs console 'screen:<id>' --for 20
+node .fuuz/ui/fuuz-ui.cjs shot 'screen:<id>' shots/loaded.png
+node .fuuz/ui/fuuz-ui.cjs run probes/my-probe.cjs      # your script gets the live page
+```
+
+Needs an installed Chrome/Chromium/Edge and the `playwright` package resolvable
+from the workspace (`npm i -D playwright`) — the session uses your **system**
+browser over CDP, so Playwright's downloaded browsers are not required.
+
+**What the skill insists on**, because each cost a real session to learn: one
+profile reused in place (cloning it retires the session it copies); a login form
+is an *abort*, never a retry, because every read after one comes back empty and
+looks like a broken feature; and verification is reading the record back, never
+looking at the canvas — a designer save can complete with no error and create
+nothing.
+
+`.fuuz/ui/profile/` holds a live session and is gitignored for you. Nothing is
+written to disk that a screenshot would not show, and the tenant token is passed
+on the terminal environment, referenced by name in the MCP config.
+
 ## Subscription & feature availability
 
 The Fuuz MCP server is gated by your subscription. **If your subscription does not
@@ -243,6 +349,9 @@ read/query policy in that tenant.
 - **Fuuz: Open in Fuuz** — open the active tenant's app
 - **Fuuz: Write MCP Server Config (.vscode/mcp.json)** — emit/refresh workspace MCP config
 - **Fuuz: Register MCP Server with Claude** — write the Fuuz servers into Claude Code / Claude Desktop config
+- **Fuuz: Install Fuuz Skills (for your AI assistant)** — copy the bundled skills to `.claude/skills/`
+- **Fuuz: Start UI Session (Browser)** — one signed-in Chrome for UI validation; log in once, leave it open
+- **Fuuz: Validate UI with Claude** — hand that window to Claude over CDP with the `fuuz-ui-validation` skill
 - **Fuuz: Generate App Context File** — write `.fuuz/AVAILABLE.md`
 - **Fuuz: Replace API Key** / **Open Settings**
 
@@ -308,9 +417,12 @@ org SLA. To re-home it, change `publisher` in `package.json`.
   - `claudeMcpWriter.ts` — registers the Fuuz servers into Claude Code / Claude Desktop config
   - `contextDocWriter.ts` — generates `.fuuz/AVAILABLE.md`
   - `tenantDataService.ts` — sync + cache resources
+  - `workspaceAssets.ts` — installs the bundled skills to `.claude/skills/` and the UI harness to `.fuuz/ui`
 - **Providers**: `tenantSelectorProvider.ts` (Connections), `resourceTreeProvider.ts` (Resources)
 - **UI**: `ui/configPanel.ts` (webview), `ui/statusBar.ts`, `ui/runtimeCommands.ts`, `ui/erdPanel.ts` (hosts the ERD webview)
 - **ERD webview**: `src/webview/erd/` — React + React Flow app, bundled to `media/erd/` by esbuild; consumes the `ErdGraph` from `util/erdTypes.ts`
+- **QA / UI**: `qa/driver.ts` (per-run headed QA browser), `qa/uiSession.ts` (the reusable signed-in session Claude attaches to over CDP)
+- **Bundled assets**: `resources/skills/` (installed as project skills), `resources/ui-harness/` (installed as `.fuuz/ui`)
 - **Entry point**: `extension.ts`
 
 ## License

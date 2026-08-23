@@ -95,6 +95,8 @@ Standard output port.
 
 **Validation:** requireOutputNode
 
+**Testability:** the Request node's `data` is strict — it carries no sample-payload property (adding one is rejected on deploy: `data must NOT have additional properties`). To run the flow in the designer without a live caller, add a **Source node** (node type `debugSource`, displayed "Source") and wire its Output into the node the Request feeds. The Source node lives in the flow's `diagram` (designer graph), never in the executable `flow`, and carries a sample `payload` + `context`. Add it **in the designer** — do not hand-build the `diagram` via MCP. Add extra Source nodes before routes/switches to exercise each branch. See the `fuuz-data-flow` skill ("Testability: the Source (debugSource) node").
+
 ---
 
 ## Response

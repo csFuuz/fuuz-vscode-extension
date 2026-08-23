@@ -5,6 +5,7 @@
  *
  * Rules: too many action buttons, oversized element count, heavy inline
  * configuration, column/field transforms that belong at table/form level,
+ * $components/$metadata referenced directly inside a $executeFlow argument,
  * ambiguous screen naming, and missing version/release notes (devops).
  */
 import { ComplianceReport, Finding, RuleResult, SEVERITY_ORDER } from './complianceTypes';
@@ -101,6 +102,45 @@ function fieldTransforms(m: ScreenModel): RuleResult {
   return rule('screen-field-transforms', 'Fields avoid inline transforms', fields.length || 1, fields.length ? passed : 1, findings);
 }
 
+/**
+ * True when a transform calls `$executeFlow(...)` and references `$components.`/`$metadata.`
+ * DIRECTLY inside the call argument (i.e. after `$executeFlow(`) without first binding it to a
+ * local `:=` variable. In a `remote: true` transform those bindings resolve to empty at runtime;
+ * the working pattern binds each to a `$var` in the outer `(...)` scope and passes only the vars.
+ */
+function leaksContextIntoExecuteFlow(transform: string): boolean {
+  const idx = transform.indexOf('$executeFlow(');
+  if (idx < 0) return false;
+  const tail = transform.slice(idx);
+  const re = /\$(?:components|metadata)\./g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(tail))) {
+    // A reference immediately preceded by `:=` is a local binding (fine); anything else is a
+    // direct, unbound reference inside the argument — that is the bug.
+    const before = tail.slice(0, match.index).replace(/\s+$/, '');
+    if (!before.endsWith(':=')) return true;
+  }
+  return false;
+}
+
+/** $executeFlow arguments must not reference $components/$metadata directly — bind to $vars first. */
+function executeFlowContext(m: ScreenModel): RuleResult {
+  const withFlow = m.elements.filter(e => e.transform && e.transform.includes('$executeFlow('));
+  if (!withFlow.length) return rule('screen-executeflow-context', '$executeFlow arguments bind $components/$metadata to $vars', 0, 0, []);
+  const findings: Finding[] = [];
+  let passed = 0;
+  for (const e of withFlow) {
+    if (leaksContextIntoExecuteFlow(e.transform!)) {
+      findings.push({
+        ruleId: 'screen-executeflow-context', severity: 'warn', where: where(e), targetId: e.id,
+        message: `"${where(e)}" references $components/$metadata directly inside $executeFlow — bind to a $var above (see fuuz-screen-design skill)`,
+        fix: 'Bind each $components/$metadata value to a local := variable in the outer (...) scope, then reference only those variables inside the $executeFlow argument.',
+      });
+    } else passed++;
+  }
+  return rule('screen-executeflow-context', '$executeFlow arguments bind $components/$metadata to $vars', withFlow.length, passed, findings);
+}
+
 /** No `$integrate` in screen element transforms — use a Connection + integration flow. */
 function screenIntegrate(m: ScreenModel): RuleResult {
   const withTransforms = m.elements.filter(e => e.transform);
@@ -190,6 +230,7 @@ export function analyzeScreen(m: ScreenModel, models?: Map<string, ModelInfo>): 
     fieldTransforms(m),
     columnDescriptions(m),
     inputDescriptions(m),
+    executeFlowContext(m),
     screenIntegrate(m),
     bigTableBinding(m, models),
     naming(m),

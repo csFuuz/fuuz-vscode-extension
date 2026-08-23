@@ -47,6 +47,8 @@ import { planMirror, type AppComponent, type McpTool as MirrorTool } from './git
 import { collectFuuzLogs, type LogQueryFn, type CollectedLog } from './qa/logCollector';
 import { QaRunsProvider, QaItem, activeTenantQaDir } from './qa/qaRunsProvider';
 import { buildHeadedDriver } from './qa/driver';
+import { buildUiSessionLaunch, screenRunUrl, UI_DIR, DEFAULT_CDP_PORT } from './qa/uiSession';
+import { installSkills, installUiHarness, ignoreUiArtifacts, type Overwrite } from './services/workspaceAssets';
 import { QaResultPanel } from './qa/qaResultPanel';
 import type { ArtifactKind, ComplianceReport, DataModelDescriptor, Finding } from './qa/complianceTypes';
 
@@ -451,6 +453,127 @@ function registerCommands(context: vscode.ExtensionContext, deps: CommandDeps) {
     vscode.window.showInformationMessage(
       'Fuuz MCP restarted. (VS Code Copilot picks this up immediately; restart Claude to reload its MCP servers.)'
     );
+  });
+
+  // ── Skills + UI validation ───────────────────────────────────────────────
+  //
+  // The bundled skills only reach an assistant once they are project skills in
+  // the workspace, and the UI-validation loop only becomes one click once the
+  // browser harness is there too. Both are plain file copies.
+
+  register('fuuz.installSkills', async () => {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) { vscode.window.showWarningMessage('Open a folder to install the Fuuz skills.'); return; }
+    const mode = await pickOverwriteMode('Fuuz skills → .claude/skills');
+    if (!mode) return;
+    const res = await installSkills(context.extensionUri, ws.uri, mode);
+    const open = await vscode.window.showInformationMessage(
+      `Fuuz: installed ${res.written.length} skill file(s) to .claude/skills`
+      + `${res.skipped.length ? ` (kept ${res.skipped.length} existing)` : ''}. `
+      + 'Your assistant can now load them by name, e.g. fuuz-ui-validation.',
+      'Open folder');
+    if (open) await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.joinPath(ws.uri, '.claude', 'skills'));
+  });
+
+  /**
+   * One login, reused all day. Installs the harness, then opens a terminal that
+   * launches a headed Chrome with its own profile and the DevTools port open.
+   * The window is left running on purpose — every later agent session attaches
+   * to it, so nobody logs in twice.
+   */
+  register('fuuz.ui.startSession', async () => {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) { vscode.window.showWarningMessage('Open a folder to start a Fuuz UI session.'); return; }
+    const appUrl = await resolveAppUrl(deps.configManager);
+    if (!appUrl) return;
+
+    // Both installs are skip-existing: a developer's edited probe or skill wins.
+    await installUiHarness(context.extensionUri, ws.uri, 'skip-existing');
+    await installSkills(context.extensionUri, ws.uri, 'skip-existing');
+    await ignoreUiArtifacts(ws.uri);
+
+    const env: Record<string, string> = { FUUZ_UI_APP: appUrl };
+    const cred = await pickSavedTestUser(context, deps.configManager);
+    if (cred) { env.FUUZ_UI_USER = cred.username; env.FUUZ_UI_PASS = cred.password; }
+
+    const term = vscode.window.createTerminal({ name: 'Fuuz UI session', cwd: ws.uri, env });
+    term.show();
+    term.sendText(`node ${UI_DIR}/fuuz-ui.cjs login --url ${appUrl}`, true);
+    vscode.window.showInformationMessage(
+      `Fuuz: opening ${appUrl}. Sign in once in that window and LEAVE IT OPEN — `
+      + 'later validation sessions attach to it. Then run "Fuuz: Validate UI with Claude".');
+  });
+
+  /**
+   * Hand the signed-in window to Claude. The Playwright MCP attaches over CDP
+   * rather than launching its own browser — a second Chrome would come up
+   * signed out, and the agent would report the login page as a broken screen.
+   */
+  register('fuuz.ui.validate', async () => {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) { vscode.window.showWarningMessage('Open a folder to run UI validation.'); return; }
+    const appUrl = await resolveAppUrl(deps.configManager);
+    if (!appUrl) return;
+
+    const brief = await vscode.window.showInputBox({
+      title: 'Validate UI with Claude',
+      prompt: 'What should it check? e.g. "the Asset Intake screen loads, filters and saves"',
+      ignoreFocusOut: true,
+      validateInput: v => v.trim() ? undefined : 'Describe what to validate',
+    });
+    if (!brief) return;
+
+    // Optional: start on the screen-runner route, which is the only surface that
+    // emits Transform Debugging. It needs the screen VERSION id — the tree's
+    // screen node carries the screen id, which would 404, so never prefill it.
+    const screenVersionId = await vscode.window.showInputBox({
+      title: 'Screen version id (optional)',
+      prompt: `Blank starts at the app root. A version id opens ${screenRunUrl(appUrl, '<versionId>')}`,
+      placeHolder: 'ScreenVersion.id — not the screen id',
+      ignoreFocusOut: true,
+    });
+
+    const autonomous = 'Yes, full authority' === await vscode.window.showQuickPick(
+      ['No, confirm before writes', 'Yes, full authority'],
+      { title: 'Authority for this session', ignoreFocusOut: true });
+
+    await installUiHarness(context.extensionUri, ws.uri, 'skip-existing');
+    await installSkills(context.extensionUri, ws.uri, 'skip-existing');
+
+    const uiDir = vscode.Uri.joinPath(ws.uri, '.fuuz', 'ui');
+    await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uiDir, 'shots'));
+
+    const enterprise = deps.configManager.getActiveEnterprise();
+    const tenant = deps.configManager.getActiveTenant();
+    let fuuz: { url: string; tenantId: string; tokenEnvVar: string } | undefined;
+    let token: string | undefined;
+    if (enterprise && tenant) {
+      token = await deps.tokenStore.getToken(enterprise.id, tenant.id);
+      // Verification is reading the record back, so the tenant MCP matters here.
+      if (token) fuuz = { url: deps.configManager.getMcpServerUrl(enterprise), tenantId: tenant.id, tokenEnvVar: 'FUUZ_UI_TOKEN' };
+    }
+
+    const launch = buildUiSessionLaunch({
+      uiDirFsPath: uiDir.fsPath,
+      mcpConfigPath: `${UI_DIR}/mcp.ui.json`,
+      appUrl,
+      cdpPort: DEFAULT_CDP_PORT,
+      brief: brief.trim(),
+      screenVersionId: screenVersionId?.trim() || undefined,
+      autonomous,
+      fuuz,
+    });
+    await vscode.workspace.fs.writeFile(
+      vscode.Uri.joinPath(uiDir, 'mcp.ui.json'),
+      Buffer.from(JSON.stringify(launch.mcpConfig, null, 2), 'utf8'));
+
+    // The token is passed on the terminal env and referenced by name in the
+    // config, so it is never written to disk.
+    const env: Record<string, string> = {};
+    if (token) env.FUUZ_UI_TOKEN = token;
+    const term = vscode.window.createTerminal({ name: 'Fuuz UI validation', cwd: ws.uri, env });
+    term.show();
+    term.sendText(launch.shellCommand, true);
   });
 
   register('fuuz.writeMcpJson', async () => {
@@ -1876,6 +1999,70 @@ interface ResourceCommandArg {
     type?: string;
     dataModels?: Array<{ name?: string }>;
   };
+}
+
+/**
+ * Whether a copy may overwrite. Asked rather than assumed: these land in the
+ * workspace, and a team may have edited a skill or written their own probes.
+ */
+async function pickOverwriteMode(what: string): Promise<Overwrite | undefined> {
+  const pick = await vscode.window.showQuickPick(
+    [
+      { label: 'Add missing files only', description: 'keeps anything you have edited', mode: 'skip-existing' as Overwrite },
+      { label: 'Overwrite with the bundled version', description: 'discards local edits to these files', mode: 'overwrite' as Overwrite },
+    ],
+    { title: `Install ${what}`, ignoreFocusOut: true });
+  return pick?.mode;
+}
+
+/**
+ * The app URL for the active enterprise, derived from its environment slug (the
+ * same derivation the QA target uses). Offered for confirmation because an
+ * enterprise with no slug, or a custom domain, has to be typed.
+ */
+async function resolveAppUrl(configManager: TenantConfigurationManager): Promise<string | undefined> {
+  const enterprise = configManager.getActiveEnterprise();
+  if (!enterprise) {
+    vscode.window.showWarningMessage('Select an active Fuuz tenant first (Fuuz: Select Active Tenant).');
+    return undefined;
+  }
+  const derived = deriveTarget(enterprise.environment ?? '').url;
+  const url = await vscode.window.showInputBox({
+    title: 'Fuuz app URL',
+    prompt: 'The app to open in the session browser',
+    value: derived,
+    ignoreFocusOut: true,
+    validateInput: v => /^https?:\/\/\S+$/.test(v.trim()) ? undefined : 'Enter a full URL',
+  });
+  return url?.trim().replace(/\/+$/, '');
+}
+
+/**
+ * Optionally reuse a QA test user (stored by "Set QA Test User") to fill an
+ * INTERNAL email/password form. A federated IdP still needs a human, so this is
+ * an offer rather than a requirement, and the password only ever travels on the
+ * terminal env.
+ */
+async function pickSavedTestUser(
+  context: vscode.ExtensionContext, configManager: TenantConfigurationManager
+): Promise<{ username: string; password: string } | undefined> {
+  const tenant = configManager.getActiveTenant();
+  if (!tenant) return undefined;
+  const choice = await vscode.window.showQuickPick(
+    ['Sign in manually in the browser', 'Use a saved QA test user'],
+    { title: 'How should this session sign in?', ignoreFocusOut: true });
+  if (choice !== 'Use a saved QA test user') return undefined;
+  const roleId = await vscode.window.showInputBox({
+    title: 'Saved QA test user', prompt: 'Role id the credential was saved under', ignoreFocusOut: true,
+  });
+  if (!roleId) return undefined;
+  const raw = await context.secrets.get(roleTestUserKey(tenant.id, roleId));
+  if (!raw) {
+    vscode.window.showWarningMessage(
+      `Fuuz: no saved test user for role "${roleId}" — sign in manually, or run "Fuuz: Set QA Test User".`);
+    return undefined;
+  }
+  try { return JSON.parse(raw); } catch { return undefined; }
 }
 
 /** Narrow an unknown command arg to the tree's node shape. */

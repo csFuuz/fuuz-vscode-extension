@@ -2,6 +2,96 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## Unreleased
+
+### Added — UI validation in a real, signed-in browser
+Pushing a screen over MCP proves the platform *accepted* it, not that it renders,
+binds, queries or saves — and a screen can deploy clean and render blank with no
+error. Two commands make "go and look" routine:
+
+- **Fuuz: Start UI Session (Browser)** — installs a small harness into `.fuuz/ui`
+  and opens one headed Chrome with its own persistent profile and the DevTools
+  port open (`--remote-allow-origins=*`, without which Chrome 136+ opens the port
+  and then refuses every connection). You sign in **once**; the window stays open.
+  Chrome is spawned **detached** rather than launched through Playwright, whose
+  browser is a child of the launching process and dies with it — measured, and it
+  presents as an `ECONNREFUSED` on the next attach, i.e. as a failed login. A
+  consequence worth knowing: the session drives your *system* Chrome over CDP, so
+  Playwright's downloaded browsers are not needed, only the package.
+  Optionally fills an internal email/password form from a saved QA test user.
+- **Fuuz: Validate UI with Claude** — points the Playwright MCP at *that*
+  already-signed-in window with `--cdp-endpoint` (never `--user-data-dir`, which
+  would launch a second, signed-out Chrome that an agent then reports as a broken
+  screen), adds the active tenant's Fuuz MCP so changes are verified by reading
+  the record back, grants clipboard permissions (reading a Monaco editor back
+  needs a clipboard round-trip — the DOM only holds the viewport), and launches
+  Claude with the new `fuuz-ui-validation` skill. Authority is opt-in per session.
+
+The same session is drivable from the terminal — `status`, `open`,
+`console`, `shot`, `run <probe.cjs>`, `reset` — which is the right shape for a
+loop or a whole-panel read. `run` hands a script the live page; `requireSession()`
+aborts loudly on a login form, because after a session expires every read comes
+back empty and looks exactly like a broken feature.
+
+`.fuuz/ui/profile/`, `shots/` and `session.json` are gitignored on install: the
+profile holds a live session. The tenant token travels on the terminal
+environment and is referenced by name in the MCP config, never written to disk.
+
+### Added — the bundled skills are now installable
+Since the in-extension Copilot was removed in 1.1.0 nothing served the skills to
+an assistant, so they shipped in the `.vsix` and reached nobody.
+**Fuuz: Install Fuuz Skills** copies them to `.claude/skills/`, where Claude Code
+discovers project skills — editable and committable, so a team can extend them.
+"Add missing files only" is the default; overwriting is a deliberate choice.
+
+### Added — field notes: the platform behaviour that fails silently
+Three new references, each documenting behaviour that produces **no error** —
+every entry found by a failure on a live tenant rather than from documentation.
+The goal is that an assistant recognises the symptom instead of debugging its own
+correct code.
+
+- `fuuz-data-model/deploy-rules.md` — names may not contain digits or end in
+  `Node`/`Edge`/`Document`; an `ID` field's name must end in `Id` (and the error
+  names neither the field nor which identifier to change); deployment is
+  asynchronous and a reverse collection to an undeployed child is dropped
+  **silently**, so the only proof is introspecting `<Name>Node { fields }`; the
+  *most recently deployed* version serves, not the highest number; mutations are
+  unique-key only and answer HTTP 200 with the error in the body; derived ids;
+  batch-then-throttle for catalogue deploys; the system `Schedule*` models to
+  reuse instead of building a calendar.
+- `fuuz-data-flow/runtime-rules.md` — the request payload is out of scope after
+  the first node (so a `mode` gate after an HTTP call is always false and every
+  run is a silent dry run that reports success); `setContext` **replaces** while
+  `mergeContext` merges; `$metadata` is web-flows-only and the wrong form yields
+  nothing rather than erroring; a query node builds variables from its **own**
+  `variablesTransform`; the node type is `mutate`, not `mutation`, and an invalid
+  type deploys clean then answers `NotFoundError`; `flow.id` must equal the
+  version id or `executeFlow` hangs for 300 s; flow-type↔invocation pairing; a web
+  flow's definition is fetched at **screen load**, so reload before judging a
+  redeploy; logging that actually persists; schedules; topics; MCP tool exposure;
+  pushing a flow too large for a tool argument.
+- `fuuz-screen-design/silent-failures.md` — three ways a screen deploys `true`
+  and renders less than you wrote (no `type: "canvas"` → blank; no
+  `custom.elementName` → element dropped; no `fn.search()` call → filters do
+  nothing); the runtime discards every prop it does not declare, so a successful
+  write proves nothing; forms that actually save, and the dropped-key filter bug
+  that prefills a "new" form with the first record; table and column rules;
+  `format: "currency"` ignoring `formatString` and numeral's `%` multiplying by
+  100; container surfaces and spacing; renaming a TabBar without orphaning its
+  panels; the four artifacts a chart needs; and why a generator must refuse to
+  rebuild a screen a human has edited.
+
+### Added — the `fuuz-ui-validation` skill
+The workflow itself: one login reused all day, attach over CDP, act, verify by
+read-back, report honestly. With references for the browser session (profiles,
+ports, tokens, and why cloning a profile retires the session it copies), the
+schema/flow/screen designers (selectors, gestures, the confirm icon that differs
+per dialog, the save-gated ID Field and relation drop target, menus and tooltips
+that silently eat clicks), Monaco (auto-closed pairs, virtualised lines that make
+a correct query read back short, the clipboard round-trip), and verification —
+including which of the three screen surfaces emits transform logging at all.
+
+
 ## 1.1.0
 
 > 🧪 **Open Beta** — this repository and extension are in open beta; features and
@@ -39,6 +129,12 @@ indefinitely — worst when switching between tenants to build across several.
   (seen on sibling "site" tenants). Resource discovery no longer gates its
   `system_query_model` / `system_list_models` calls on tool-catalog membership, so
   those tenants load their resources instead of showing "connected but empty".
+- **True errors are now surfaced, not swallowed.** JSON-RPC and transport failures
+  during discovery (e.g. a `tools/list` that throws `-32603 "Custom types cannot be
+  represented in JSON Schema"`, an HTTP error, or a per-tool RPC error) are captured
+  with their code/message and shown under the **"Couldn't load some resources"**
+  node and the **Fuuz** output channel — so a tenant that connects but can't build
+  its tool catalog is diagnosable instead of silently empty.
 
 ### Added
 - **Restart Fuuz MCP** command (and Connections view button): drops pooled MCP

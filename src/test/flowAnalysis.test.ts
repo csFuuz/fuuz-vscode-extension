@@ -42,6 +42,11 @@ test('saved script with $ pass-through + input schema + no validate → contract
   assert.equal(ruleOf(withValidate, 'flow-saved-contract', ctx).findings.length, 0);
 });
 
+// The former "source-node testability" check was removed: the designer's Source node
+// (type `debugSource`, with sample payload+context) lives in the flow's `diagram`, not
+// the executable `flow` this analyzer sees, so a flow-JSON check can't observe it and
+// shouldn't push a stand-in into the runtime flow. Guidance lives in the fuuz-data-flow skill.
+
 test('query scoping: unfiltered transactional warns; setup model is exempt; where passes', () => {
   const ctx: FlowAnalysisContext = { models: new Map([
     ['WorkOrder', { name: 'WorkOrder', type: 'transactional', recordCount: 100 }],
@@ -118,6 +123,7 @@ test('runFlowGraphCompliance: clean flow scores 100', () => {
     id: 'f', name: 'Compute Order Totals', type: 'System',
     nodes: [
       node({ id: '1', kind: 'entry', entryType: 'request', name: 'From Web Flow' }),
+      node({ id: 's', kind: 'jsonata', name: 'Seed Order Payload', description: 'sample payload for designer testing', script: '{ "orderId": "SO-1001" }' }),
       node({ id: '2', kind: 'tryCatch', name: 'Try Main' }),
       node({ id: '3', kind: 'inlineScript', name: 'Compute totals', description: 'sum lines', script: 'try { return sum() } catch(e){ throw e }' }),
       node({ id: '4', kind: 'query', name: 'Load the order', description: 'scoped', variablesTransform: '$ctx', query: 'query { workOrder(where:{id:{_eq:$id}}) { edges { node { id } } } }' }),

@@ -294,6 +294,26 @@ Read via transform: `$components.Screen.context.metrics.total`
 
 URL parameters: `$metadata.urlParameters.id` (shorthand `id` in form query parameters).
 
+### `$executeFlow` Argument Scope (gotcha)
+
+In a `remote: true` transform (e.g. a Form's `query.dataTransform`, or any `__transform`/`dataTransform`) that calls `$executeFlow(...)`, referencing `$components.X` or `$metadata.X` **directly inside the argument object** resolves to **empty at runtime** — the executeFlow argument is evaluated in a scope where those context bindings are not available.
+
+**Rule:** Never reference `$components`/`$metadata` directly inside a `$executeFlow` argument — bind them to `$variables` in the outer scope first, then pass only those variables.
+
+```
+BAD  — $components/$metadata resolve to empty inside the argument:
+$executeFlow("f", { "serial": $components.Form1.data.serial, "mode": $metadata.settings.ThemeMode })
+
+GOOD — bind to local $variables in the outer (...) scope, then reference those:
+(
+  $serial := $components.Form1.data.serial;
+  $mode := $metadata.settings.ThemeMode;
+  $executeFlow("f", { "serial": $serial, "mode": $mode })
+)
+```
+
+This is the pattern the SPC/downtime dashboards use. The screen compliance check `screen-executeflow-context` flags the BAD form.
+
 ---
 
 ## 3. Action Steps
@@ -674,3 +694,16 @@ Children fill a 3-column grid with equal-width cells.
 4. **Content overflowing**: Add `overflowY: "auto"` to scrollable containers and ensure they have a constrained height (via parent `height: "100%"` or `flexGrow: true`).
 5. **Items not wrapping**: `flexWrap` defaults to `true`, but if set to `false`, items stay on one line and may overflow.
 6. **Grid items not spanning**: Use `GridCell` with `colSpan`/`rowSpan` inside grid-layout containers.
+
+## Before you deploy: read [silent-failures.md](./silent-failures.md)
+
+The ways a screen deploys `true` and renders **less than you wrote**, with nothing
+logged anywhere: a component missing `type: "canvas"` renders blank; an element
+missing `custom.elementName` is dropped; a filter form with nothing calling
+`fn.search()` filters nothing. The runtime discards every prop it does not
+declare, so a successful write proves nothing. Also there: forms that actually
+save (and the undefined-filter bug that prefills a "new" form with the first
+record), table/column rules, the two number-format traps, container surfaces and
+spacing, renaming a TabBar without orphaning its panels, the four artifacts a
+chart needs, and why a generator must refuse to rebuild a screen a human has
+edited.

@@ -228,6 +228,14 @@ function savedContract(g: FlowGraph, ctx?: FlowAnalysisContext): RuleResult {
   return rule('flow-saved-contract', 'Saved scripts/queries get a payload contract', saved.length || 1, saved.length ? passed : 1, findings);
 }
 
+// NOTE: A "flow-source-node-testability" check used to live here. It was removed:
+// the designer's Source node (type `debugSource`, carrying a sample payload+context)
+// lives in the flow's `diagram`, NOT the executable `flow` this analyzer sees, and
+// the platform forbids hand-building the diagram. So a flow-JSON-level check for it
+// would be both blind to the real node and would (wrongly) push authors to pollute
+// the runtime flow with a stand-in transform/`samplePayload`. Source-node guidance
+// now lives in the `fuuz-data-flow` skill ("Testability: the Source (debugSource) node").
+
 /** Root model field tokens selected at the top level of a GraphQL query. */
 export function rootModelsOf(query: string): string[] {
   const out: string[] = [];

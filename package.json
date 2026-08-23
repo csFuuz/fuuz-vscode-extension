@@ -246,6 +246,21 @@
         "icon": "$(radio-tower)"
       },
       {
+        "command": "fuuz.installSkills",
+        "title": "Install Fuuz Skills (for your AI assistant)",
+        "category": "Fuuz"
+      },
+      {
+        "command": "fuuz.ui.startSession",
+        "title": "Start UI Session (Browser)",
+        "category": "Fuuz"
+      },
+      {
+        "command": "fuuz.ui.validate",
+        "title": "Validate UI with Claude",
+        "category": "Fuuz"
+      },
+      {
         "command": "fuuz.writeMcpJson",
         "title": "Write MCP Server Config (.vscode/mcp.json)",
         "category": "Fuuz"

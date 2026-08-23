@@ -77,6 +77,28 @@ JSONata treats a single-element array and the element itself as equivalent:
 - `Phone.number[0]` gets the first `number` of EACH phone (map then index)
 - `(Phone.number)[0]` gets the first from ALL numbers (flatten then index)
 
+#### Force a projection to stay an array with trailing `[]` (critical for aggregation)
+
+A path/projection that happens to match **exactly one** item returns the *bare item*, not a
+1-element array. Downstream code that assumes an array then misbehaves:
+- `$count(x)` on a bare object returns **1** (ok) but `$count` on a bare *string* also returns 1 — but
+  `$sum`, `$append`, `.node` mapping, and index access `x[0]` silently do the wrong thing on a singleton.
+- A filter that matches one row (`edges[pred]`) collapses to that one object; iterating it as a list breaks.
+
+**Fix: append `[]` to force sequence-to-array**, so 0/1/many are handled uniformly:
+
+```jsonata
+$activeOps := $wops.( ... )[];        /* always an array, even for a single match */
+$exists($activeOps[0]) ? ... : null   /* presence test — NOT $count($x) > 0 on a maybe-singleton */
+$rows := data.edges[status = "open"][];   /* one match still iterates as a list */
+```
+
+Rules of thumb:
+- Building an array you will `$count`/`$sum`/`$append`/iterate? End the projection with `[]`.
+- Presence check: prefer `$exists(x[0])` / `$exists(x)` over `$count(x) > 0`.
+- Null-guard before dereferencing a maybe-null relation: `$cpr != null ? $append([], $cpr.x.edges.node.id) : []`
+  and parenthesize `in`: `$cpr != null and ($pid in $ids)`. A deref on null throws and kills the whole transform.
+
 ---
 
 ## Critical Gotchas
@@ -91,6 +113,7 @@ JSONata treats a single-element array and the element itself as equivalent:
 8. **`undefined` propagates** -- Accessing a missing field returns `undefined`, which silently drops from results rather than erroring
 9. **No explicit return** -- Last expression evaluated is the result
 10. **Dot-before-brace matters** -- `Account.Order.{"p": Product}` constructs per-item; `Account.{"o": Order}` constructs once
+11. **`$components`/`$metadata` go empty inside a `$executeFlow` argument** -- In a `__remote: true` transform, referencing `$components.X`/`$metadata.X` directly inside the `$executeFlow(...)` argument object resolves to empty. Bind them to `$variables` in the outer `(...)` scope first, then pass only those variables. See the `fuuz-screen-design` skill (`$executeFlow` Argument Scope).
 
 ---
 

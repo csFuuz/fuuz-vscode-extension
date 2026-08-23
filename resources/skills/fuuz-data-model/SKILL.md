@@ -530,3 +530,15 @@ A "Machine" setup model with a relation, sequence, index, and trigger. Shows the
   "migrations": [{ "dataModelVersionId": "eeee-ffff-0000-1111", "dataModelVersion": { "number": 1 }, "mappingExpression": "$" }]
 }
 ```
+
+## Before you deploy: read [deploy-rules.md](./deploy-rules.md)
+
+Naming and deploy behaviour that fails **only** at `createDataModelVersion` /
+`deployDataModelVersion` — or does not fail at all and quietly serves an
+incomplete schema. Model names may not contain digits or end in `Node`/`Edge`/
+`Document`; an `ID` field's name must end in `Id`; a reverse collection to an
+undeployed child is dropped **silently**; deployment is asynchronous, so the only
+proof it worked is introspecting `<Name>Node { fields }`; and the *most recently
+deployed* version serves, not the highest number. Also there: derived ids, unique-
+key-only mutations, and the system `Schedule*` models to reuse instead of building
+a calendar.

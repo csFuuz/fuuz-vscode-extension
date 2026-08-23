@@ -55,6 +55,47 @@ Every data flow is wrapped in a version container with a header and a version:
 
 `header.dataFlowTypeId` and `flow.type` must be the SAME value.
 
+#### MCP-exposed flows: keep the tool schema JSON-representable (REQUIRED)
+
+When a flow is exposed as an MCP tool (`mcpToolConfiguration.enabled = true`), that config
+carries an explicit **`inputSchema`** and **`outputSchema`** (both JSON Schema). **Define
+BOTH.** If `outputSchema` is left **null/unset**, the platform tries to **infer** the output
+schema from the flow's actual return types — and flow nodes return **custom GraphQL types**
+(DataModels, `EntityMatch*`, mutation results, …) that **cannot be represented in JSON
+Schema**, so building the tool throws:
+
+```
+-32603  "Custom types cannot be represented in JSON Schema"
+```
+
+**This one failure blanks the ENTIRE tenant's tool catalog** — every tool, including the
+`system_*` tools, disappears from `tools/list`, so AI assistants (Claude/Copilot) see *no*
+callable tools for that tenant. (Direct, by-name calls still succeed, which is why the flow
+"works" but no agent can discover it, and why the VS Code extension's Resources tree can
+still load while agents can't.)
+
+What's confirmed vs. still open:
+- **Confirmed correlation:** every failing flow had `inputSchema` defined and valid but
+  `outputSchema: **null**` (site1/site2 ctx-proto flows). A sibling tenant with **no** MCP-tool
+  flows built its catalog fine. So a null `outputSchema` + custom return types is the trigger.
+- **Not yet a proven remote fix:** setting `outputSchema` on the flow's config **via the API
+  header alone did NOT clear `tools/list`** in testing — it likely must be baked into a
+  **redeployed version**, and the flow graph can't be faithfully round-tripped through
+  `system_query_model` (nodes come back as TRON, not JSON), so this is **not** safely fixable
+  by blind remote mutation. Do it in the **flow designer**: set an explicit `outputSchema`
+  (a permissive `{"type":"object","additionalProperties":true}` if the output is free-form)
+  on the MCP-tool config and **redeploy** the flow.
+
+Rules:
+- **Always define an explicit `outputSchema`** (and keep `inputSchema` JSON-representable) on
+  an MCP-exposed flow, in the designer, and redeploy — don't leave `outputSchema` null.
+- Best fixed at the platform level too: Fuuz should treat a null `outputSchema` as "omit"
+  rather than inferring a custom-typed one, and `tools/list` should skip an unrepresentable
+  tool instead of failing the whole tenant's catalog.
+- Diagnosis: the Fuuz VS Code extension surfaces the exact `-32603` message under **"Couldn't
+  load some resources"** and the **Fuuz** output channel. A tenant that connects but shows an
+  empty tool catalog while a sibling tenant is fine is the signature of this bug.
+
 ### Flow Schema
 
 The flow is the execution model -- what the engine runs. Required fields: `id`, `type`.
@@ -424,6 +465,40 @@ The canonical Screen flow pattern:
 }}
 ```
 
+## Testability: the Source (debugSource) node
+
+Every flow you build should be runnable in the designer **without waiting on a live trigger**. Fuuz provides a dedicated node for exactly this: the **Source** node (node type **`debugSource`**). Add one, give it a **representative sample payload**, and wire it into the node your real trigger feeds — then "Run" from it to execute the whole flow with that sample.
+
+**Critical facts about the Source node:**
+
+1. **It is a real node type — `debugSource`, displayed as "Source".** It is *not* a `request`/`transform`/anything else. (`request`, `schedule`, `topic`, `dataChanges`, `webhook`, `tagChanges` are the *live* trigger types — none of them carries a sample payload; a `request` node's `data` is strict and rejects any extra key like `samplePayload`.)
+2. **It lives in the flow's `diagram`, NOT the executable `flow`.** `DataFlowVersion` has two content fields: `flow` (what the engine runs) and `diagram` (the designer graph). The Source node exists only in `diagram`, so it **never runs in production** — it's pure designer tooling. Querying `flow.nodes` will never show it; query the `diagram` field.
+3. **It carries both a sample `payload` and a sample `context`.** Its `data` is `{ "payload": { …sample input… }, "context": { …sample $state.context… }, "nextNodes": ["<target node id>"] }`. `payload` seeds the flow input (`$`); `context` seeds `$state.context`. `nextNodes` (and a diagram link from its Output port to that node's input port) point at the node your live trigger feeds.
+
+Shape, as stored in the `diagram` (mirror this exactly — the `name` is literally "Source"):
+
+```json
+"<uuid>": {
+  "id": "<uuid>", "type": "debugSource", "name": "Source", "x": 35, "y": 170,
+  "ports": [ { "id": "<port-id>", "type": "default", "parentNode": "<uuid>",
+              "links": ["<link-id>"], "in": false,
+              "fieldLabel": "Output", "fieldPath": "data.nextNodes" } ],
+  "data": { "payload": { "orderId": "SO-1001", "quantity": 5 }, "context": {}, "nextNodes": ["<target node id>"] }
+}
+```
+plus a `diagram` link `{ "source": "<uuid>", "sourcePort": "<port-id>", "target": "<target node id>", "targetPort": "<target's input port id>", … }`.
+
+**How to add it — in the designer, not via MCP.** The `system_data_flow_mutations` tool explicitly warns **do not hand-construct the `diagram`** (manually built diagrams get port/layout wrong and break the designer UI). When you push a flow via MCP, omit `diagram` and the platform auto-generates it — then **add the Source node in the flow designer UI** (drag a Source node onto the canvas, paste the sample payload/context into it, and connect its Output to the node the trigger feeds). This is the supported path and takes seconds in the designer.
+
+**Branch coverage.** Add **more than one** Source node to exercise different conditions — place an extra Source *before each route/switch or ifElse* with a payload/context that steers into that branch, so every path can be tested in isolation:
+
+```
+Source (payload: save action)   -> switch -> Save path
+Source (payload: delete action) -> switch -> Delete path
+```
+
+The sample `payload`/`context` should mirror the real **contract** — the fields, types, and shape the flow expects — so the Source node doubles as living documentation of the expected input.
+
 ## General Design Principles
 
 1. **Source nodes start the flow** -- `schedule`, `dataChanges`, `topic`, `request`, `tagChanges`, `deviceSubscription` trigger execution.
@@ -436,3 +511,16 @@ The canonical Screen flow pattern:
 8. **Use `setContext` for shared state** -- Especially in Screen flows where branches need the same data.
 9. **Use `catchError` for external calls** -- Wrap queries and mutations that might fail.
 10. **Name nodes descriptively** -- Names appear in logs and the designer; clear names simplify debugging.
+
+## Before you run it: read [runtime-rules.md](./runtime-rules.md)
+
+Why a wrong flow usually *runs* and does nothing. The request payload is out of
+scope after the first node (so a gate reading `$.mode` after an http node makes
+every run a silent dry run); `setContext` **replaces** the context while
+`mergeContext` merges; `$metadata` is web-flows-only and the wrong form yields
+nothing instead of erroring; a query node builds variables from its **own**
+`variablesTransform`; the node type is `mutate`, not `mutation`, and an invalid
+type deploys clean then answers `NotFoundError`; `flow.id` must equal the version
+id or `executeFlow` hangs for 300 s. Also there: flow-type↔invocation pairing,
+`DataFlowDeploymentLog` logging setup, schedules, topics, MCP tool exposure, and
+how to push a flow too large to pass through a tool argument.
