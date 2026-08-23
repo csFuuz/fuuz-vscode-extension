@@ -73,8 +73,24 @@ const knownScalarTypes: Rule<DataModelDescriptor> = d => {
 };
 
 /**
+ * Field names that end in `Id` but are BUSINESS KEYS, not foreign keys.
+ *
+ * A vendor mirror carries the source system's own identifier so a relation can
+ * resolve against it (`partId → Part.externalId`) — it is a relation's TARGET,
+ * never its source. Demanding an object relation for it asks for a model that
+ * does not exist, and the suggested fix reads as nonsense.
+ *
+ * This is not hypothetical tidying: on a 160-model Plex mirror this rule produced
+ * ~160 identical warnings, which was the entire report. Real findings — a
+ * transactional model named like a setup type, among them — were buried under a
+ * repeated false alarm, and a rule that cries wolf is worse than no rule.
+ */
+const BUSINESS_KEYS = new Set(['externalId', '_externalId']);
+
+/**
  * Foreign-key ↔ relation pairing: every to-one relation `x` has a scalar `xId`,
- * and every scalar `xId` (other than `id`) has a matching object relation `x`.
+ * and every scalar `xId` (other than `id` and a business key) has a matching
+ * object relation `x`.
  */
 const fkRelationPairing: Rule<DataModelDescriptor> = d => {
   const fieldNames = new Set(d.fields.map(f => f.name));
@@ -94,6 +110,7 @@ const fkRelationPairing: Rule<DataModelDescriptor> = d => {
   }
   for (const f of d.fields) {
     if (f.name === 'id' || !/Id$/.test(f.name) || base(f.type) !== 'ID') continue;
+    if (BUSINESS_KEYS.has(f.name)) continue;
     checks++;
     const rel = f.name.slice(0, -2);
     if (relNames.has(rel)) passed++;

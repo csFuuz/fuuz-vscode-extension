@@ -2,6 +2,20 @@
 
 All notable changes to **Fuuz for VS Code**.
 
+## 1.2.2
+
+### Fixed — `fk-relation-pairing` treated a business key as a foreign key
+Seen on a real tenant audit: 160 mirrored vendor models produced **~160 identical
+warnings** telling the developer to add an object relation `external` — to a model
+that does not exist. With 0 errors, that one rule *was* the report, and the
+genuine findings in it (a transactional model named like a setup type, among
+others) were buried under a repeated false alarm.
+
+A source system's own identifier (`externalId`, `_externalId`) is a relation's
+**target**, not its source — `partId → Part.externalId` is the pattern — so it is
+now exempt. The exemption is deliberately narrow: a real foreign key with no
+matching relation is still flagged, and there is a test pinning both halves.
+
 ## 1.2.1
 
 ### Fixed — the UI-validation skill said `/run` gives you transform logging. It does not.

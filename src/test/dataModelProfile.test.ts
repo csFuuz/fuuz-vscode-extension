@@ -178,3 +178,27 @@ test('high-frequency-index: large table without a trigger is flagged', () => {
   const small = model({ name: 'WorkOrder', recordCount: 67 });
   assert.equal(run('high-frequency-index', small).checks, 0);
 });
+
+test('fk-relation-pairing: a business key is not a foreign key', () => {
+  // A 160-model vendor mirror produced ~160 identical warnings telling it to add
+  // an object relation `external` — to a model that does not exist. That one rule
+  // was the entire report, and it buried the real findings under it.
+  const mirror = model({
+    name: 'VendorApprovedSupplier',
+    fields: [f('id', 'ID!'), f('externalId', 'ID'), f('supplierId', 'ID')],
+    relations: [rel('supplier', 'Supplier')],
+  });
+  const r = run('fk-relation-pairing', mirror);
+  assert.equal(r.findings.filter(x => x.where === 'externalId').length, 0,
+    'a vendor business key must not be demanded to have an object relation');
+
+  // The exemption is narrow: a genuine unpaired foreign key is still caught.
+  const withRealFk = model({
+    name: 'VendorApprovedSupplier',
+    fields: [f('id', 'ID!'), f('externalId', 'ID'), f('supplierId', 'ID'), f('warehouseId', 'ID')],
+    relations: [rel('supplier', 'Supplier')],
+  });
+  const r2 = run('fk-relation-pairing', withRealFk);
+  assert.equal(r2.findings.filter(x => x.where === 'warehouseId').length, 1,
+    'a real FK with no matching relation is still flagged');
+});
